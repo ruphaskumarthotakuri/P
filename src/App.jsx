@@ -6,6 +6,9 @@ import AuthPage from './pages/AuthPage.jsx'
 import MemberPage from './pages/MemberPage.jsx'
 import { PageSkeleton } from './components/Skeletons.jsx'
 
+const FEED_PAGE_SIZE = 10
+const COMMENT_PAGE_SIZE = 2
+
 function isProfileComplete(profile) {
   const requiredValues = [profile.phone, profile.education, profile.description, profile.location, profile.church_name]
   const latitude = Number(profile.latitude)
@@ -103,6 +106,9 @@ export default function App() {
   const [feedBusy, setFeedBusy] = useState(false)
   const [feedError, setFeedError] = useState('')
   const [feedRefresh, setFeedRefresh] = useState(0)
+  const [feedHasMore, setFeedHasMore] = useState(false)
+  const [feedMoreBusy, setFeedMoreBusy] = useState(false)
+  const [loadingCommentPost, setLoadingCommentPost] = useState('')
   const [busyLikePosts, setBusyLikePosts] = useState([])
   const [commentDrafts, setCommentDrafts] = useState({})
   const [busyCommentPost, setBusyCommentPost] = useState('')
@@ -304,53 +310,100 @@ export default function App() {
     return () => { active = false }
   }, [user?.id])
 
+  async function fetchFeedPage(offset) {
+    const { data: rows, error } = await supabase.from('posts')
+      .select('id, user_id, image_path, caption, location, latitude, longitude, created_at')
+      .order('created_at', { ascending: false }).range(offset, offset + FEED_PAGE_SIZE - 1)
+    if (error) throw error
+    const postsPage = rows || []
+    const ids = [...new Set(postsPage.map(post => post.user_id))]
+    const { data: profiles, error: profilesError } = ids.length
+      ? await supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').in('user_id', ids)
+      : { data: [], error: null }
+    if (profilesError) throw profilesError
+    const [result, verifiedUsers] = await Promise.all([
+      addSignedPhotoUrls(supabase, postsPage, profiles || []),
+      fetchVerifiedUsers(ids),
+    ])
+    const postIds = postsPage.map(post => post.id)
+    const { data: likeRows, error: likesError } = postIds.length
+      ? await supabase.from('post_likes').select('post_id, user_id').in('post_id', postIds)
+      : { data: [], error: null }
+    if (likesError) throw likesError
+    return {
+      posts: result.posts.map(post => ({
+        ...post,
+        author: post.author ? { ...post.author, is_verified: Boolean(verifiedUsers[post.user_id]) } : null,
+        like_count: (likeRows || []).filter(like => like.post_id === post.id).length,
+        liked_by_me: (likeRows || []).some(like => like.post_id === post.id && like.user_id === user.id),
+        comments: [],
+        comments_total: null,
+        comments_loaded: false,
+      })),
+      hasMore: postsPage.length === FEED_PAGE_SIZE,
+    }
+  }
+
   useEffect(() => {
     if (profileTab !== 'feed' || !user || !supabase) return
     let active = true
     setFeedBusy(true)
+    setFeedHasMore(false)
+    setFeedPosts([])
     setFeedError('')
-    supabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at')
-      .order('created_at', { ascending: false }).limit(100)
-      .then(async ({ data, error }) => {
-        if (error) throw error
-        const rows = data || []
-        const ids = [...new Set(rows.map(post => post.user_id))]
-        const { data: profiles, error: profilesError } = ids.length
-          ? await supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').in('user_id', ids)
-          : { data: [], error: null }
-        if (profilesError) throw profilesError
-        const [result, verifiedUsers] = await Promise.all([
-          addSignedPhotoUrls(supabase, rows, profiles || []),
-          fetchVerifiedUsers(ids),
-        ])
-        const postIds = rows.map(post => post.id)
-        const [{ data: likeRows, error: likesError }, { data: commentRows, error: commentsError }] = postIds.length
-          ? await Promise.all([
-              supabase.from('post_likes').select('post_id, user_id').in('post_id', postIds),
-              supabase.from('post_comments').select('id, post_id, user_id, content, created_at').in('post_id', postIds).order('created_at', { ascending: true }),
-            ])
-          : [{ data: [], error: null }, { data: [], error: null }]
-        if (likesError) throw likesError
-        if (commentsError) throw commentsError
-        const commentUserIds = [...new Set((commentRows || []).map(comment => comment.user_id))]
-        const { data: commentProfiles, error: commentProfilesError } = commentUserIds.length
-          ? await supabase.from('profiles').select('user_id, full_name').in('user_id', commentUserIds)
-          : { data: [], error: null }
-        if (commentProfilesError) throw commentProfilesError
-        const namesByUser = new Map((commentProfiles || []).map(item => [item.user_id, item.full_name]))
-        const enrichedPosts = result.posts.map(post => ({
-          ...post,
-          author: post.author ? { ...post.author, is_verified: Boolean(verifiedUsers[post.user_id]) } : null,
-          like_count: (likeRows || []).filter(like => like.post_id === post.id).length,
-          liked_by_me: (likeRows || []).some(like => like.post_id === post.id && like.user_id === user.id),
-          comments: (commentRows || []).filter(comment => comment.post_id === post.id).map(comment => ({ ...comment, author_name: namesByUser.get(comment.user_id) || 'Member' })),
-        }))
-        if (active) setFeedPosts(enrichedPosts)
+    fetchFeedPage(0)
+      .then(({ posts: page, hasMore }) => {
+        if (active) { setFeedPosts(page); setFeedHasMore(hasMore) }
       })
       .catch(error => { if (active) setFeedError(`Could not load the feed. Run supabase/posts-schema.sql in Supabase SQL Editor. (${error.message})`) })
       .finally(() => { if (active) setFeedBusy(false) })
     return () => { active = false }
   }, [profileTab, user?.id, feedRefresh])
+
+  async function loadMoreFeedPosts() {
+    if (!supabase || !user || feedMoreBusy || !feedHasMore) return
+    setFeedMoreBusy(true)
+    try {
+      const { posts: page, hasMore } = await fetchFeedPage(feedPosts.length)
+      setFeedPosts(current => [...current, ...page])
+      setFeedHasMore(hasMore)
+    } catch (error) {
+      setFeedError(`Could not load more posts. (${error.message})`)
+    } finally {
+      setFeedMoreBusy(false)
+    }
+  }
+
+  async function loadPostComments(post) {
+    if (!supabase || loadingCommentPost === post.id) return
+    const offset = post.comments_loaded ? post.comments.length : 0
+    setLoadingCommentPost(post.id)
+    try {
+      const { data, count, error } = await supabase.from('post_comments')
+        .select('id, post_id, user_id, content, created_at', { count: 'exact' })
+        .eq('post_id', post.id)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + COMMENT_PAGE_SIZE - 1)
+      if (error) throw error
+      const commentUserIds = [...new Set((data || []).map(comment => comment.user_id))]
+      const { data: commentProfiles, error: profilesError } = commentUserIds.length
+        ? await supabase.from('profiles').select('user_id, full_name').in('user_id', commentUserIds)
+        : { data: [], error: null }
+      if (profilesError) throw profilesError
+      const namesByUser = new Map((commentProfiles || []).map(item => [item.user_id, item.full_name]))
+      const comments = (data || []).map(comment => ({ ...comment, author_name: namesByUser.get(comment.user_id) || 'Member' }))
+      setFeedPosts(current => current.map(item => item.id === post.id ? {
+        ...item,
+        comments: offset ? [...item.comments, ...comments] : comments,
+        comments_total: count ?? comments.length,
+        comments_loaded: true,
+      } : item))
+    } catch (error) {
+      setProfileNotice({ kind: 'error', text: `Could not load comments. (${error.message})` })
+    } finally {
+      setLoadingCommentPost('')
+    }
+  }
 
   useEffect(() => {
     if (avatarFile) {
@@ -450,7 +503,11 @@ export default function App() {
       const { data, error } = await supabase.from('post_comments').insert({ post_id: post.id, user_id: user.id, content }).select('id, post_id, user_id, content, created_at').single()
       if (error) throw error
       const comment = { ...data, author_name: profile.full_name || user.user_metadata?.full_name || 'You' }
-      setFeedPosts(current => current.map(item => item.id === post.id ? { ...item, comments: [...item.comments, comment] } : item))
+      setFeedPosts(current => current.map(item => item.id === post.id ? {
+        ...item,
+        comments: item.comments_loaded ? [comment, ...item.comments].slice(0, COMMENT_PAGE_SIZE) : item.comments,
+        comments_total: item.comments_total == null ? null : item.comments_total + 1,
+      } : item))
       setCommentDrafts(current => ({ ...current, [post.id]: '' }))
     } catch (error) {
       setProfileNotice({ kind: 'error', text: `Could not add comment. Run the updated supabase/posts-schema.sql. (${error.message})` })
@@ -877,8 +934,8 @@ export default function App() {
     whatsappAdminStatus, whatsappStatusError, whatsappDisplayTitle, whatsappDisplayMessage, whatsappUnlinkBusy, unlinkWhatsApp, bulkMessageResults, setBulkMessageResults,
     profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings, accountMenuOpen,
     setAccountMenuOpen, profile, avatarPreview, setAvatarPreview, saveProfile, avatarFile, setAvatarFile,
-    profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, openMemberProfile,
-    busyLikePosts, togglePostLike, busyCommentPost, commentDrafts, setCommentDrafts, submitPostComment,
+    profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, feedHasMore, feedMoreBusy, loadMoreFeedPosts, openMemberProfile,
+    busyLikePosts, togglePostLike, busyCommentPost, commentDrafts, setCommentDrafts, submitPostComment, loadingCommentPost, loadPostComments,
     viewedProfileBusy, viewedProfileError, viewedProfile, viewedSocialLinks, viewedProfilePosts, socialLinks,
     posts, composerOpen, setComposerOpen, setProfileNotice, publishPost, postFile, postPreview, setPostFile,
     setPostLocation, postCaption, setPostCaption, postLocationBusy, postLocation, detectPostLocation, postBusy,
