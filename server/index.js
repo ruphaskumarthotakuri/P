@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
+import { Redis } from '@upstash/redis'
 import ExcelJS from 'exceljs'
 import { normalizeWhatsAppNumber, sendWhatsAppText, startWhatsApp, unlinkWhatsApp, whatsappAdminStatus, whatsappStatus } from './whatsapp.js'
 
@@ -20,6 +21,9 @@ const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || ''
 const serviceRoleKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 const adminSupabase = supabaseUrl && serviceRoleKey
   ? createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } })
+  : null
+const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+  ? new Redis({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN })
   : null
 const adminCookieName = 'northstar_admin'
 const adminSessionDuration = 12 * 60 * 60 * 1000
@@ -40,6 +44,103 @@ app.use(express.json())
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', supabaseConfigured: Boolean(supabaseUrl && supabaseKey) })
+})
+
+async function getMemberForRequest(req) {
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
+  if (!token || !supabaseUrl || !supabaseKey) return null
+  const client = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false, autoRefreshToken: false } })
+  const { data, error } = await client.auth.getUser(token)
+  return error ? null : data.user || null
+}
+
+app.get('/api/feed/ordering', async (req, res) => {
+  if (!adminSupabase) return res.status(503).json({ error: 'Supabase server access is not configured.' })
+  try {
+    const user = await getMemberForRequest(req)
+    if (!user) return res.status(401).json({ error: 'Sign in to load your member feed.' })
+
+    const followsKey = `northstar:follows:${user.id}`
+    const discoveryKey = 'northstar:feed:member-order:v1'
+    let followedIds = null
+    let orderedMemberIds = null
+    let hadCachedFollows = false
+    let hadCachedMembers = false
+    if (redis) {
+      const [cachedFollows, cachedMembers] = await Promise.all([
+        redis.get(followsKey).catch(() => null),
+        redis.get(discoveryKey).catch(() => null),
+      ])
+      hadCachedFollows = Array.isArray(cachedFollows)
+      hadCachedMembers = Array.isArray(cachedMembers)
+      followedIds = hadCachedFollows ? cachedFollows : null
+      orderedMemberIds = hadCachedMembers ? cachedMembers : null
+    }
+    const [followRows, memberRows] = await Promise.all([
+      followedIds ? Promise.resolve(null) : adminSupabase.from('follows').select('following_id').eq('follower_id', user.id),
+      orderedMemberIds ? Promise.resolve(null) : adminSupabase.from('profiles').select('user_id').limit(5000),
+    ])
+    if (followRows?.error) throw followRows.error
+    if (memberRows?.error) throw memberRows.error
+    if (!followedIds) followedIds = (followRows?.data || []).map(row => row.following_id)
+    if (!orderedMemberIds) {
+      orderedMemberIds = (memberRows?.data || []).map(row => row.user_id)
+      for (let index = orderedMemberIds.length - 1; index > 0; index -= 1) {
+        const randomIndex = Math.floor(Math.random() * (index + 1))
+        ;[orderedMemberIds[index], orderedMemberIds[randomIndex]] = [orderedMemberIds[randomIndex], orderedMemberIds[index]]
+      }
+    }
+    if (redis) await Promise.all([
+      ...(!hadCachedFollows ? [redis.set(followsKey, followedIds, { ex: 300 }).catch(() => null)] : []),
+      ...(!hadCachedMembers ? [redis.set(discoveryKey, orderedMemberIds, { ex: 300 }).catch(() => null)] : []),
+    ])
+
+    const followedSet = new Set(followedIds)
+    return res.json({
+      followedIds,
+      discoveryIds: orderedMemberIds.filter(id => id !== user.id && !followedSet.has(id)).slice(0, 150),
+      cache: redis ? 'upstash' : 'disabled',
+    })
+  } catch (error) {
+    return res.status(503).json({ error: error.message || 'Could not prepare the member feed.' })
+  }
+})
+
+app.put('/api/follows/:userId', async (req, res) => {
+  if (!adminSupabase) return res.status(503).json({ error: 'Supabase server access is not configured.' })
+  try {
+    const user = await getMemberForRequest(req)
+    if (!user) return res.status(401).json({ error: 'Sign in to follow members.' })
+    const followingId = String(req.params.userId || '')
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    if (!uuidPattern.test(followingId) || followingId === user.id) return res.status(400).json({ error: 'Choose a valid member to follow.' })
+    const { data: target, error: targetError } = await adminSupabase.from('profiles').select('user_id').eq('user_id', followingId).maybeSingle()
+    if (targetError) throw targetError
+    if (!target) return res.status(404).json({ error: 'That member profile no longer exists.' })
+    const { error } = await adminSupabase.from('follows').upsert({ follower_id: user.id, following_id: followingId }, { onConflict: 'follower_id,following_id', ignoreDuplicates: true })
+    if (error) throw error
+    if (redis) { try { await redis.del(`northstar:follows:${user.id}`) } catch { /* Follow writes have already succeeded in Supabase. */ } }
+    return res.json({ following: true })
+  } catch (error) {
+    return res.status(503).json({ error: error.message || 'Could not follow this member.' })
+  }
+})
+
+app.delete('/api/follows/:userId', async (req, res) => {
+  if (!adminSupabase) return res.status(503).json({ error: 'Supabase server access is not configured.' })
+  try {
+    const user = await getMemberForRequest(req)
+    if (!user) return res.status(401).json({ error: 'Sign in to manage follows.' })
+    const followingId = String(req.params.userId || '')
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    if (!uuidPattern.test(followingId) || followingId === user.id) return res.status(400).json({ error: 'Choose a valid member.' })
+    const { error } = await adminSupabase.from('follows').delete().eq('follower_id', user.id).eq('following_id', followingId)
+    if (error) throw error
+    if (redis) { try { await redis.del(`northstar:follows:${user.id}`) } catch { /* Follow writes have already succeeded in Supabase. */ } }
+    return res.json({ following: false })
+  } catch (error) {
+    return res.status(503).json({ error: error.message || 'Could not update this follow.' })
+  }
 })
 
 app.get('/api/me', async (req, res) => {

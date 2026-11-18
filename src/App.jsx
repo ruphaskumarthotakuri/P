@@ -8,6 +8,7 @@ import { PageSkeleton } from './components/Skeletons.jsx'
 
 const FEED_PAGE_SIZE = 10
 const COMMENT_PAGE_SIZE = 2
+const POST_FIELDS = 'id, user_id, image_path, caption, location, latitude, longitude, created_at'
 
 function isProfileComplete(profile) {
   const requiredValues = [profile.phone, profile.education, profile.description, profile.location, profile.church_name]
@@ -82,6 +83,18 @@ async function addSignedPhotoUrls(client, posts, profiles = []) {
   }
 }
 
+async function memberApi(path, options = {}) {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.access_token) throw new Error('Your session has expired. Sign in again.')
+  const response = await fetch(path, {
+    ...options,
+    headers: { Authorization: `Bearer ${session.access_token}`, ...(options.headers || {}) },
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.error || 'The request could not be completed.')
+  return result
+}
+
 export default function App() {
   const [mode, setMode] = useState('login')
   const [email, setEmail] = useState('')
@@ -108,6 +121,9 @@ export default function App() {
   const [feedRefresh, setFeedRefresh] = useState(0)
   const [feedHasMore, setFeedHasMore] = useState(false)
   const [feedMoreBusy, setFeedMoreBusy] = useState(false)
+  const [feedFollowingIds, setFeedFollowingIds] = useState([])
+  const [feedDiscoveryIds, setFeedDiscoveryIds] = useState([])
+  const [followBusyIds, setFollowBusyIds] = useState([])
   const [loadingCommentPost, setLoadingCommentPost] = useState('')
   const [busyLikePosts, setBusyLikePosts] = useState([])
   const [commentDrafts, setCommentDrafts] = useState({})
@@ -310,26 +326,40 @@ export default function App() {
     return () => { active = false }
   }, [user?.id])
 
-  async function fetchFeedPage(offset) {
-    const { data: rows, error } = await supabase.from('posts')
-      .select('id, user_id, image_path, caption, location, latitude, longitude, created_at')
-      .order('created_at', { ascending: false }).range(offset, offset + FEED_PAGE_SIZE - 1)
-    if (error) throw error
-    const postsPage = rows || []
+  async function fetchFeedPage(offset, ordering = { followedIds: feedFollowingIds, discoveryIds: feedDiscoveryIds }) {
+    const followedIds = (ordering.followedIds || []).filter(id => id !== user.id).slice(0, 500)
+    const discoveryIds = (ordering.discoveryIds || []).filter(id => id !== user.id && !followedIds.includes(id)).slice(0, 150)
+    const followingQuery = followedIds.length
+      ? supabase.from('posts').select(POST_FIELDS, { count: 'exact' }).in('user_id', followedIds).order('created_at', { ascending: false }).range(offset, offset + FEED_PAGE_SIZE - 1)
+      : Promise.resolve({ data: [], count: 0, error: null })
+    const { data: followedRows, count: followedCount, error: followedError } = await followingQuery
+    if (followedError) throw followedError
+    const followedPosts = followedRows || []
+    const slotsLeft = FEED_PAGE_SIZE - followedPosts.length
+    const discoveryOffset = Math.max(0, offset - (followedCount || 0))
+    const discoveryQuery = slotsLeft > 0 && discoveryIds.length
+      ? supabase.from('posts').select(POST_FIELDS).in('user_id', discoveryIds).order('created_at', { ascending: false }).range(discoveryOffset, discoveryOffset + slotsLeft - 1)
+      : Promise.resolve({ data: [], error: null })
+    const { data: discoveryRows, error: discoveryError } = await discoveryQuery
+    if (discoveryError) throw discoveryError
+    const discoveryRank = new Map(discoveryIds.map((id, index) => [id, index]))
+    const discoveryPosts = (discoveryRows || []).sort((a, b) => (discoveryRank.get(a.user_id) ?? Infinity) - (discoveryRank.get(b.user_id) ?? Infinity))
+    const postsPage = [...followedPosts, ...discoveryPosts]
     const ids = [...new Set(postsPage.map(post => post.user_id))]
-    const { data: profiles, error: profilesError } = ids.length
-      ? await supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').in('user_id', ids)
-      : { data: [], error: null }
-    if (profilesError) throw profilesError
+    const postIds = postsPage.map(post => post.id)
+    const [profilesResult, likesResult] = await Promise.all([
+      ids.length
+        ? supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').in('user_id', ids)
+        : Promise.resolve({ data: [], error: null }),
+      postIds.length ? supabase.from('post_likes').select('post_id, user_id').in('post_id', postIds) : Promise.resolve({ data: [], error: null }),
+    ])
+    if (profilesResult.error) throw profilesResult.error
+    if (likesResult.error) throw likesResult.error
     const [result, verifiedUsers] = await Promise.all([
-      addSignedPhotoUrls(supabase, postsPage, profiles || []),
+      addSignedPhotoUrls(supabase, postsPage, profilesResult.data || []),
       fetchVerifiedUsers(ids),
     ])
-    const postIds = postsPage.map(post => post.id)
-    const { data: likeRows, error: likesError } = postIds.length
-      ? await supabase.from('post_likes').select('post_id, user_id').in('post_id', postIds)
-      : { data: [], error: null }
-    if (likesError) throw likesError
+    const likeRows = likesResult.data || []
     return {
       posts: result.posts.map(post => ({
         ...post,
@@ -351,11 +381,17 @@ export default function App() {
     setFeedHasMore(false)
     setFeedPosts([])
     setFeedError('')
-    fetchFeedPage(0)
-      .then(({ posts: page, hasMore }) => {
-        if (active) { setFeedPosts(page); setFeedHasMore(hasMore) }
+    memberApi('/api/feed/ordering')
+      .then(ordering => {
+        if (!active) return null
+        setFeedFollowingIds(ordering.followedIds || [])
+        setFeedDiscoveryIds(ordering.discoveryIds || [])
+        return fetchFeedPage(0, ordering)
       })
-      .catch(error => { if (active) setFeedError(`Could not load the feed. Run supabase/posts-schema.sql in Supabase SQL Editor. (${error.message})`) })
+      .then(result => {
+        if (active && result) { setFeedPosts(result.posts); setFeedHasMore(result.hasMore) }
+      })
+      .catch(error => { if (active) setFeedError(`Could not load the feed. ${error.message.includes('follows') ? 'Run supabase/follows-schema.sql in Supabase SQL Editor.' : 'Check your posts schema and server environment.'} (${error.message})`) })
       .finally(() => { if (active) setFeedBusy(false) })
     return () => { active = false }
   }, [profileTab, user?.id, feedRefresh])
@@ -371,6 +407,21 @@ export default function App() {
       setFeedError(`Could not load more posts. (${error.message})`)
     } finally {
       setFeedMoreBusy(false)
+    }
+  }
+
+  async function toggleMemberFollow(memberId) {
+    if (!memberId || memberId === user?.id || followBusyIds.includes(memberId)) return
+    setFollowBusyIds(current => [...current, memberId])
+    const currentlyFollowing = feedFollowingIds.includes(memberId)
+    try {
+      await memberApi(`/api/follows/${memberId}`, { method: currentlyFollowing ? 'DELETE' : 'PUT' })
+      setFeedFollowingIds(current => currentlyFollowing ? current.filter(id => id !== memberId) : [...current, memberId])
+      setFeedRefresh(value => value + 1)
+    } catch (error) {
+      setProfileNotice({ kind: 'error', text: `Could not update follow. ${error.message}` })
+    } finally {
+      setFollowBusyIds(current => current.filter(id => id !== memberId))
     }
   }
 
@@ -934,7 +985,7 @@ export default function App() {
     whatsappAdminStatus, whatsappStatusError, whatsappDisplayTitle, whatsappDisplayMessage, whatsappUnlinkBusy, unlinkWhatsApp, bulkMessageResults, setBulkMessageResults,
     profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings, accountMenuOpen,
     setAccountMenuOpen, profile, avatarPreview, setAvatarPreview, saveProfile, avatarFile, setAvatarFile,
-    profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, feedHasMore, feedMoreBusy, loadMoreFeedPosts, openMemberProfile,
+    profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, feedHasMore, feedMoreBusy, loadMoreFeedPosts, feedFollowingIds, followBusyIds, toggleMemberFollow, openMemberProfile,
     busyLikePosts, togglePostLike, busyCommentPost, commentDrafts, setCommentDrafts, submitPostComment, loadingCommentPost, loadPostComments,
     viewedProfileBusy, viewedProfileError, viewedProfile, viewedSocialLinks, viewedProfilePosts, socialLinks,
     posts, composerOpen, setComposerOpen, setProfileNotice, publishPost, postFile, postPreview, setPostFile,
