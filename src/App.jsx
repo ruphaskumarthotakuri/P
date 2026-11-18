@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import AdminPage from './pages/AdminPage.jsx'
 import AdminLoginPage from './pages/AdminLoginPage.jsx'
@@ -132,6 +132,11 @@ export default function App() {
   const [viewedProfilePosts, setViewedProfilePosts] = useState([])
   const [viewedFollowStats, setViewedFollowStats] = useState(null)
   const [profileFollowStats, setProfileFollowStats] = useState(null)
+  const [followListState, setFollowListState] = useState(null)
+  const [notifications, setNotifications] = useState([])
+  const [notificationsBusy, setNotificationsBusy] = useState(false)
+  const [notificationsError, setNotificationsError] = useState('')
+  const followListRequestRef = useRef(0)
   const [viewedProfileBusy, setViewedProfileBusy] = useState(false)
   const [viewedProfileError, setViewedProfileError] = useState('')
   const [postFile, setPostFile] = useState(null)
@@ -406,6 +411,49 @@ export default function App() {
     return () => { active = false }
   }, [profileTab, user?.id, feedRefresh])
 
+  useEffect(() => {
+    if (!user || !supabase) return
+    let active = true
+    const loadNotifications = async () => {
+      setNotificationsBusy(true)
+      setNotificationsError('')
+      try {
+        const { data, error } = await supabase.from('notifications')
+          .select('id, actor_id, kind, post_id, created_at, read_at')
+          .eq('recipient_id', user.id).order('created_at', { ascending: false }).limit(50)
+        if (error) throw error
+        const rows = data || []
+        const actorIds = [...new Set(rows.map(item => item.actor_id).filter(Boolean))]
+        const { data: actors, error: actorError } = actorIds.length
+          ? await supabase.from('profiles').select('user_id, full_name, avatar_path').in('user_id', actorIds)
+          : { data: [], error: null }
+        if (actorError) throw actorError
+        const { profiles } = await addSignedPhotoUrls(supabase, [], actors || [])
+        const actorById = new Map(profiles.map(item => [item.user_id, item]))
+        if (active) setNotifications(rows.map(item => ({ ...item, actor: actorById.get(item.actor_id) || null })))
+      } catch (error) {
+        if (active) setNotificationsError(error.message.includes('notifications') ? 'Run supabase/notifications-schema.sql in Supabase SQL Editor to enable notifications.' : error.message)
+      } finally {
+        if (active) setNotificationsBusy(false)
+      }
+    }
+    loadNotifications()
+    const channel = supabase.channel(`member-notifications-${user.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${user.id}` }, loadNotifications)
+      .subscribe()
+    return () => { active = false; supabase.removeChannel(channel) }
+  }, [user?.id])
+
+  async function openNotification(item) {
+    if (!item.read_at) {
+      const readAt = new Date().toISOString()
+      const { error } = await supabase.from('notifications').update({ read_at: readAt }).eq('id', item.id).eq('recipient_id', user.id)
+      if (!error) setNotifications(current => current.map(notification => notification.id === item.id ? { ...notification, read_at: readAt } : notification))
+    }
+    if (item.actor_id && item.kind !== 'new_member') await openMemberProfile(item.actor_id)
+    else if (item.actor_id) await openMemberProfile(item.actor_id)
+  }
+
   async function loadMoreFeedPosts() {
     if (!supabase || !user || feedMoreBusy || !feedHasMore) return
     setFeedMoreBusy(true)
@@ -420,21 +468,49 @@ export default function App() {
     }
   }
 
-  async function toggleMemberFollow(memberId) {
+  async function toggleMemberFollow(memberId, isFollowingOverride) {
     if (!memberId || memberId === user?.id || followBusyIds.includes(memberId)) return
     setFollowBusyIds(current => [...current, memberId])
-    const currentlyFollowing = viewedFollowStats?.userId === memberId ? viewedFollowStats.isFollowing : feedFollowingIds.includes(memberId)
+    const currentlyFollowing = typeof isFollowingOverride === 'boolean'
+      ? isFollowingOverride
+      : viewedFollowStats?.userId === memberId ? viewedFollowStats.isFollowing : feedFollowingIds.includes(memberId)
     try {
       await memberApi(`/api/follows/${memberId}`, { method: currentlyFollowing ? 'DELETE' : 'PUT' })
       setFeedFollowingIds(current => currentlyFollowing ? current.filter(id => id !== memberId) : [...current, memberId])
       setViewedFollowStats(current => current?.userId === memberId ? { ...current, isFollowing: !currentlyFollowing, followers: Math.max(0, (current.followers || 0) + (currentlyFollowing ? -1 : 1)) } : current)
       setProfileFollowStats(current => current ? { ...current, following: Math.max(0, (current.following || 0) + (currentlyFollowing ? -1 : 1)) } : current)
+      setFollowListState(current => current ? { ...current, items: current.items.map(item => item.user_id === memberId ? { ...item, isFollowing: !currentlyFollowing } : item) } : current)
       setFeedRefresh(value => value + 1)
     } catch (error) {
       setProfileNotice({ kind: 'error', text: `Could not update follow. ${error.message}` })
     } finally {
       setFollowBusyIds(current => current.filter(id => id !== memberId))
     }
+  }
+
+  async function openFollowList(profileId, listType) {
+    const requestId = ++followListRequestRef.current
+    const title = listType === 'followers' ? 'Followers' : 'Following'
+    setFollowListState({ profileId, listType, title, items: [], busy: true, error: '' })
+    try {
+      const result = await memberApi(`/api/follows/${profileId}?list=${listType}`)
+      const ids = result.userIds || []
+      const { data, error } = ids.length
+        ? await supabase.from('profiles').select('user_id, full_name, location, avatar_path').in('user_id', ids)
+        : { data: [], error: null }
+      if (error) throw error
+      const { profiles } = await addSignedPhotoUrls(supabase, [], data || [])
+      const byId = new Map(profiles.map(item => [item.user_id, item]))
+      const items = ids.map(id => ({ ...byId.get(id), user_id: id, isFollowing: (result.viewerFollowingIds || []).includes(id) }))
+      if (requestId === followListRequestRef.current) setFollowListState({ profileId, listType, title, items, busy: false, error: '' })
+    } catch (error) {
+      if (requestId === followListRequestRef.current) setFollowListState({ profileId, listType, title, items: [], busy: false, error: error.message || 'Could not load this list.' })
+    }
+  }
+
+  function closeFollowList() {
+    followListRequestRef.current += 1
+    setFollowListState(null)
   }
 
   async function loadPostComments(post, loadAll = false) {
@@ -1002,8 +1078,9 @@ export default function App() {
     profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings, accountMenuOpen,
     setAccountMenuOpen, profile, avatarPreview, setAvatarPreview, saveProfile, avatarFile, setAvatarFile,
     profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, feedHasMore, feedMoreBusy, loadMoreFeedPosts, feedFollowingIds, followBusyIds, toggleMemberFollow, openMemberProfile,
+    notifications, notificationsBusy, notificationsError, openNotification,
     busyLikePosts, togglePostLike, busyCommentPost, commentDrafts, setCommentDrafts, submitPostComment, loadingCommentPost, loadPostComments, loadAllPostComments: post => loadPostComments(post, true),
-    viewedProfileBusy, viewedProfileError, viewedProfile, viewedSocialLinks, viewedProfilePosts, viewedFollowStats, profileFollowStats, socialLinks,
+    viewedProfileBusy, viewedProfileError, viewedProfile, viewedSocialLinks, viewedProfilePosts, viewedFollowStats, profileFollowStats, followListState, openFollowList, closeFollowList, socialLinks,
     posts, composerOpen, setComposerOpen, setProfileNotice, publishPost, postFile, postPreview, setPostFile,
     setPostLocation, postCaption, setPostCaption, postLocationBusy, postLocation, detectPostLocation, postBusy,
     postsLoadError, postsBusy, supabase, setUser,

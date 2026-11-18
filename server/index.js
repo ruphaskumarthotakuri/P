@@ -138,6 +138,20 @@ app.get('/api/follows/:userId', async (req, res) => {
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     if (!uuidPattern.test(profileId)) return res.status(400).json({ error: 'Choose a valid member profile.' })
 
+    const listType = String(req.query.list || '')
+    if (listType === 'followers' || listType === 'following') {
+      const column = listType === 'followers' ? 'follower_id' : 'following_id'
+      const ownerColumn = listType === 'followers' ? 'following_id' : 'follower_id'
+      const { data, error } = await adminSupabase.from('follows').select(`${column}, created_at`).eq(ownerColumn, profileId).order('created_at', { ascending: false }).limit(500)
+      if (error) throw error
+      const userIds = (data || []).map(row => row[column])
+      const { data: viewerRows, error: viewerError } = userIds.length
+        ? await adminSupabase.from('follows').select('following_id').eq('follower_id', user.id).in('following_id', userIds)
+        : { data: [], error: null }
+      if (viewerError) throw viewerError
+      return res.json({ userIds, viewerFollowingIds: (viewerRows || []).map(row => row.following_id) })
+    }
+
     const followCacheVersion = await readFollowCacheVersion()
     const statsKey = followCacheVersion == null ? null : `northstar:follow-stats:${followCacheVersion}:${profileId}`
     let stats = null

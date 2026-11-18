@@ -416,12 +416,54 @@ form input:focus { border-color: #555; }
 .feed-post { overflow: hidden; border: 1px solid #e5eae4; border-radius: 10px; background: #fff; box-shadow: 0 5px 20px #26332908; }
 .feed-post-header { display: flex; min-height: 63px; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; }
 .feed-post-header > time { flex: 0 0 auto; color: #858d85; font-size: 10px; }
+.feed-post-meta { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; }
+.follow-button { padding: 6px 11px; border: 1px solid #1d4a38; border-radius: 18px; background: #1d4a38; color: #fff; cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; }
+.follow-button.following { background: #fff; color: #315d45; }
+.follow-button:disabled { cursor: wait; opacity: .65; }
 .profile-social-stats { display: flex; flex-wrap: wrap; gap: 26px; margin: 14px 0 10px; }
-.profile-social-stats > div { display: flex; align-items: baseline; gap: 5px; color: #707970; font-size: 12px; }
+.profile-social-stats > div, .profile-social-stats > button { display: flex; align-items: baseline; gap: 5px; color: #707970; font-size: 12px; }
+.profile-stat-button { padding: 0; border: 0; background: transparent; cursor: pointer; font: inherit; text-align: left; }
+.profile-stat-button:hover span { color: #183e32; text-decoration: underline; }
 .profile-social-stats strong { color: #28352d; font-size: 14px; font-weight: 700; }
 .profile-follow-button { min-height: 32px; margin-left: 8px; padding: 6px 14px; border: 1px solid #1d4a38; border-radius: 6px; background: #1d4a38; color: #fff; cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; }
 .profile-follow-button.following { background: #fff; color: #315d45; }
 .profile-follow-button:disabled { cursor: wait; opacity: .65; }
+.notification-tab { display: inline-flex; align-items: center; gap: 6px; }
+.notification-count { display: inline-grid; min-width: 17px; height: 17px; place-items: center; padding: 0 4px; border-radius: 10px; background: #b83e4b; color: white; font-size: 9px; font-weight: 700; }
+.notifications-content { width: min(100%, 760px); min-height: calc(100vh - 130px); margin: 0 auto; padding: 32px 22px 56px; }
+.notifications-content .feed-heading { margin-bottom: 16px; }
+.notifications-list { overflow: hidden; border: 1px solid #e5eae4; border-radius: 10px; background: #fff; }
+.notification-item { display: flex; width: 100%; min-height: 70px; align-items: center; gap: 12px; padding: 12px 14px; border: 0; border-bottom: 1px solid #eff2ee; background: #fff; color: #4b554e; cursor: pointer; text-align: left; }
+.notification-item:last-child { border-bottom: 0; }
+.notification-item:hover { background: #f8faf7; }
+.notification-item.unread { background: #f4f8f4; }
+.notification-item > img, .notification-item > .network-avatar-fallback { width: 42px; height: 42px; flex: 0 0 42px; border-radius: 50%; object-fit: cover; }
+.notification-copy { display: grid; min-width: 0; flex: 1; gap: 5px; font-size: 12px; line-height: 1.4; }
+.notification-copy strong { color: #253029; }
+.notification-copy time { color: #858d85; font-size: 10px; }
+.notification-unread-dot, .mobile-notification-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #b83e4b; }
+.mobile-notification-dot { position: absolute; top: 3px; right: calc(50% - 14px); }
+.mobile-bottom-bar button[aria-label="Notifications"] { position: relative; }
+.network-modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 18px; background: #14231bb8; }
+.network-modal { display: flex; width: min(100%, 430px); max-height: min(640px, 85vh); flex-direction: column; overflow: hidden; border: 1px solid #e5eae4; border-radius: 14px; background: #fff; box-shadow: 0 20px 60px #101a1433; }
+.network-modal > header { display: flex; min-height: 58px; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid #edf0ec; }
+.network-modal h2 { margin: 0; color: #253029; font-size: 16px; }
+.network-modal > header button { width: 34px; height: 34px; border: 0; border-radius: 50%; background: transparent; color: #677269; cursor: pointer; font-size: 24px; }
+.network-modal > header button:hover { background: #f2f5f1; }
+.network-list { overflow-y: auto; padding: 5px 14px; }
+.network-member { display: flex; min-height: 65px; align-items: center; gap: 12px; border-bottom: 1px solid #f0f2ef; }
+.network-member:last-child { border-bottom: 0; }
+.network-member-open { display: flex; min-width: 0; flex: 1; align-items: center; gap: 11px; padding: 8px 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.network-member-open img, .network-avatar-fallback { width: 42px; height: 42px; flex: 0 0 42px; border-radius: 50%; object-fit: cover; }
+.network-avatar-fallback { display: grid; place-items: center; background: #e8eee8; color: #315d45; font-family: Georgia, serif; font-size: 17px; }
+.network-member-open > span:last-child { display: grid; min-width: 0; gap: 3px; }
+.network-member-open strong { overflow: hidden; color: #27352c; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.network-member-open small { overflow: hidden; color: #7a827b; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.network-follow-button { min-width: 88px; padding: 7px 11px; border: 1px solid #1d4a38; border-radius: 7px; background: #1d4a38; color: #fff; cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; }
+.network-follow-button.following { background: #fff; color: #315d45; }
+.network-follow-button:disabled { cursor: wait; opacity: .65; }
+.network-list-message { padding: 28px 18px; color: #737d74; font-size: 12px; text-align: center; }
+.network-list-error { color: #a53d3d; }
 .feed-author { display: flex; min-width: 0; align-items: center; gap: 10px; padding: 0; border: 0; background: transparent; text-align: left; }
 .feed-author > img, .feed-avatar-fallback { width: 36px; height: 36px; flex: 0 0 36px; border: 1px solid #e6ebe5; border-radius: 50%; object-fit: cover; }
 .feed-avatar-fallback { display: grid; place-items: center; background: #e8eee8; color: #476352; font-size: 13px; font-weight: 650; }
@@ -474,6 +516,7 @@ form input:focus { border-color: #555; }
 .account-menu button:hover { background: #f3f7f3; color: #183e32; }
 @media (max-width: 650px) {
   .feed-content { padding: 24px 14px 35px; }
+  .notifications-content { padding: 24px 14px 35px; }
   .feed-post { border-radius: 8px; }
   .feed-post-image { height: clamp(240px, 72vw, 520px); }
   .post-card > img, .post-image-missing { height: clamp(200px, 68vw, 340px); }
