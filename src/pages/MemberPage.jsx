@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowUpRight, Camera, Facebook, Heart, Home, Instagram, MapPin, MessageCircle, Plus, Send, Settings, UserRound, Youtube } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { FeedSkeleton, PostGridSkeleton, ProfileSkeleton } from '../components/Skeletons.jsx'
 
 export default function MemberPage({ app }) {
@@ -14,6 +14,10 @@ export default function MemberPage({ app }) {
     postCaption, setPostCaption, postLocationBusy, postLocation, detectPostLocation, postBusy,
     postsLoadError, postsBusy, supabase, setUser,
   } = app
+  const galleryInputRef = useRef(null)
+  const cameraFallbackInputRef = useRef(null)
+  const cameraVideoRef = useRef(null)
+  const [cameraStream, setCameraStream] = useState(null)
 
   useEffect(() => {
     if (!composerOpen || profileTab !== 'profile') return
@@ -22,6 +26,60 @@ export default function MemberPage({ app }) {
     })
     return () => window.cancelAnimationFrame(frame)
   }, [composerOpen, profileTab])
+
+  useEffect(() => {
+    if (!cameraStream) return
+    const video = cameraVideoRef.current
+    if (video) {
+      video.srcObject = cameraStream
+      video.play().catch(() => {})
+    }
+    return () => cameraStream.getTracks().forEach(track => track.stop())
+  }, [cameraStream])
+
+  function choosePostFile(event) {
+    const file = event.currentTarget.files?.[0]
+    if (file) {
+      setPostFile(file)
+      setPostLocation(null)
+    }
+    event.currentTarget.value = ''
+  }
+
+  async function openPostCamera() {
+    setProfileNotice(null)
+    if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) {
+      cameraFallbackInputRef.current?.click()
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
+      setCameraStream(stream)
+    } catch (error) {
+      setProfileNotice({ kind: 'error', text: error.name === 'NotAllowedError' ? 'Allow camera access in your browser, or choose a photo from your gallery/files.' : 'Could not open the camera. Choose a photo from your gallery/files instead.' })
+    }
+  }
+
+  function capturePostPhoto() {
+    const video = cameraVideoRef.current
+    if (!video?.videoWidth || !video?.videoHeight) {
+      setProfileNotice({ kind: 'error', text: 'The camera is not ready yet. Try again in a moment.' })
+      return
+    }
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height)
+    canvas.toBlob(blob => {
+      if (!blob) {
+        setProfileNotice({ kind: 'error', text: 'Could not capture the photo. Please try again.' })
+        return
+      }
+      setPostFile(new File([blob], `northstar-post-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+      setPostLocation(null)
+      setCameraStream(null)
+    }, 'image/jpeg', 0.92)
+  }
 
   return (
     <main className="page member-page">
@@ -74,7 +132,7 @@ export default function MemberPage({ app }) {
           <button className="back-to-feed" onClick={() => setProfileTab('feed')}><ArrowLeft size={15} /> Back to feed</button>
           {viewedProfileBusy ? <ProfileSkeleton /> : viewedProfileError ? <p className="posts-setup-note" role="status">{viewedProfileError}</p> : viewedProfile && <><section className="profile-overview public-profile-overview">{viewedProfile.avatar_url ? <img className="profile-large-avatar" src={viewedProfile.avatar_url} alt="" /> : <div className="profile-large-avatar profile-avatar-empty">{(viewedProfile.full_name || 'M').slice(0, 1).toUpperCase()}</div>}<div className="profile-identity"><div className="profile-name-row"><h1>{viewedProfile.full_name || 'Member'}</h1>{viewedProfile.is_verified && <span className="verified-tick" role="img" aria-label="Verified member" title="Verified member">✓</span>}</div><p>{viewedProfile.description || 'No description added.'}</p><div className="profile-socials">{viewedSocialLinks.map(link => <a key={link.label} href={link.url} target="_blank" rel="noreferrer">{link.label === 'Instagram' ? <Instagram size={14} /> : link.label === 'Facebook' ? <Facebook size={14} /> : <Youtube size={14} />}{link.label}<ArrowUpRight size={12} /></a>)}</div></div></section>
             <section className="profile-details public-profile-details"><div><span>Education</span><strong>{viewedProfile.education || '—'}</strong></div><div><span>Location</span><strong>{viewedProfile.location || '—'}</strong></div><div><span>Church / organization</span><strong>{viewedProfile.church_name || '—'}</strong></div><div><span>Church location</span><strong>{viewedProfile.church_location || '—'}</strong></div></section>
-            {viewedProfile.user_id === user.id ? <section className="posts-section"><header className="posts-heading"><div><p className="eyebrow">YOUR PHOTOS</p><h2>My posts <span>{viewedProfilePosts.length}</span></h2></div></header>{viewedProfilePosts.length ? <div className="posts-grid">{viewedProfilePosts.map(post => <article className="post-card" key={post.id}>{post.image_url ? <img src={post.image_url} alt={post.caption || 'Member post'} /> : <div className="post-image-missing">Photo unavailable</div>}<div className="post-card-info">{post.caption && <p>{post.caption}</p>}<span><MapPin size={12} /> {post.location}</span><time>{new Date(post.created_at).toLocaleDateString()}</time></div></article>)}</div> : <div className="posts-empty"><strong>No posts yet</strong></div>}</section> : <section className="posts-section"><p className="private-posts-note">This member’s photos are visible to them on their profile. View shared posts in the feed.</p></section>}</>}
+            <section className="posts-section"><header className="posts-heading"><div><p className="eyebrow">PHOTOS</p><h2>{viewedProfile.user_id === user.id ? 'My posts' : 'Posts'} <span>{viewedProfilePosts.length}</span></h2></div></header>{viewedProfilePosts.length ? <div className="posts-grid">{viewedProfilePosts.map(post => <article className="post-card" key={post.id}>{post.image_url ? <img src={post.image_url} alt={post.caption || 'Member post'} /> : <div className="post-image-missing">Photo unavailable</div>}<div className="post-card-info">{post.caption && <p>{post.caption}</p>}<span><MapPin size={12} /> {post.location}</span><time>{new Date(post.created_at).toLocaleDateString()}</time></div></article>)}</div> : <div className="posts-empty"><strong>No posts yet</strong></div>}</section></>}
         </section> : <>
           <section className="profile-overview" id="profile">
             {avatarPreview ? <img className="profile-large-avatar" src={avatarPreview} alt="Profile" onError={() => { setAvatarPreview(''); setProfileNotice({ kind: 'error', text: 'Profile photo could not load. Please upload it again in Settings.' }) }} /> : <div className="profile-large-avatar profile-avatar-empty">{(profile.full_name || user.email || 'U').slice(0, 1).toUpperCase()}</div>}
@@ -82,10 +140,30 @@ export default function MemberPage({ app }) {
           </section>
           <section className="profile-details"><div><span>Phone</span><strong>{profile.phone || '—'}</strong></div><div><span>Education</span><strong>{profile.education || '—'}</strong></div><div><span>Location</span><strong>{profile.location || '—'}</strong></div><div><span>Church / organization</span><strong>{profile.church_name || '—'}</strong></div><div><span>Church location</span><strong>{profile.church_location || '—'}</strong></div></section>
           <section className="posts-section"><header className="posts-heading"><div><p className="eyebrow">YOUR PHOTOS</p><h2>My posts <span>{posts.length}</span></h2></div><button type="button" className="primary-button new-post-button" onClick={() => { setComposerOpen(open => !open); setProfileNotice(null) }}>{composerOpen ? 'Close' : <><Plus size={15} /> New post</>}</button></header>
-            {composerOpen && <form id="post-composer" className="post-composer" onSubmit={publishPost}><div className="composer-fields"><label className="post-photo-picker">{postPreview ? <img src={postPreview} alt="Selected post" /> : <span><b><Camera size={22} /></b>Choose or capture a photo</span>}<input type="file" accept="image/*" capture="environment" onChange={event => { setPostFile(event.target.files?.[0] || null); setPostLocation(null) }} /></label><div className="composer-side"><label>Caption<textarea rows="4" maxLength="2000" value={postCaption} onChange={event => setPostCaption(event.target.value)} placeholder="Write a caption…" /></label><div className="post-location-row"><button className="detect-location-button" type="button" onClick={detectPostLocation} disabled={postLocationBusy}>{postLocationBusy ? 'Finding location…' : postLocation ? <><MapPin size={13} /> Location added</> : <><MapPin size={13} /> Add photo location</>}</button><span>{postLocation?.location || 'Required before posting'}</span></div><p className="location-required-note">A location must be attached before the image can be uploaded.</p><button className="primary-button publish-button" type="submit" disabled={postBusy || !postFile || !postLocation}>{postBusy ? 'Uploading…' : 'Share post'}</button></div></div></form>}
+            {composerOpen && <form id="post-composer" className="post-composer" onSubmit={publishPost}>
+              <div className="composer-fields">
+                <div className="post-photo-picker">
+                  <div className="post-photo-preview">
+                    {postPreview ? <img src={postPreview} alt="Selected post" /> : <span><b><Camera size={22} /></b>Choose a photo or use your camera</span>}
+                  </div>
+                  <div className="post-photo-controls">
+                    <label className="secondary-button">Gallery / files<input ref={galleryInputRef} type="file" accept="image/*" onChange={choosePostFile} /></label>
+                    <button className="secondary-button" type="button" onClick={openPostCamera}><Camera size={14} /> Use camera</button>
+                    <input ref={cameraFallbackInputRef} className="sr-only" type="file" accept="image/*" capture="environment" onChange={choosePostFile} aria-label="Take a photo" />
+                  </div>
+                </div>
+                <div className="composer-side">
+                  <label>Caption<textarea rows="4" maxLength="2000" value={postCaption} onChange={event => setPostCaption(event.target.value)} placeholder="Write a caption…" /></label>
+                  <div className="post-location-row"><button className="detect-location-button" type="button" onClick={detectPostLocation} disabled={postLocationBusy}>{postLocationBusy ? 'Finding location…' : postLocation ? <><MapPin size={13} /> Location added</> : <><MapPin size={13} /> Add photo location</>}</button><span>{postLocation?.location || 'Required before posting'}</span></div>
+                  <p className="location-required-note">A location must be attached before the image can be uploaded.</p>
+                  <button className="primary-button publish-button" type="submit" disabled={postBusy || !postFile || !postLocation}>{postBusy ? 'Uploading…' : 'Share post'}</button>
+                </div>
+              </div>
+            </form>}
             {postsLoadError ? <p className="posts-setup-note" role="status">{postsLoadError}</p> : postsBusy ? <PostGridSkeleton count={3} /> : posts.length ? <div className="posts-grid">{posts.map(post => <article className="post-card" key={post.id}>{post.image_url ? <img src={post.image_url} alt={post.caption || 'Profile post'} /> : <div className="post-image-missing">Photo unavailable</div>}<div className="post-card-info">{post.caption && <p>{post.caption}</p>}<span><MapPin size={12} /> {post.location}</span><time>{new Date(post.created_at).toLocaleDateString()}</time></div></article>)}</div> : <div className="posts-empty"><span className="empty-camera"><Camera size={21} /></span><strong>No posts yet</strong><p>Share a photo and it will appear here on your profile.</p><button className="empty-post-button" onClick={() => setComposerOpen(true)}>Create your first post</button></div>}
           </section>
         </>}
+        {cameraStream && <div className="post-camera-backdrop" role="presentation"><section className="post-camera-modal" role="dialog" aria-modal="true" aria-labelledby="post-camera-title"><header><strong id="post-camera-title">Take a photo</strong><button type="button" aria-label="Close camera" onClick={() => setCameraStream(null)}>×</button></header><video ref={cameraVideoRef} autoPlay playsInline muted /><div className="post-camera-actions"><button className="secondary-button" type="button" onClick={() => setCameraStream(null)}>Cancel</button><button className="primary-button" type="button" onClick={capturePostPhoto}>Use photo</button></div></section></div>}
         <nav className="mobile-bottom-bar" aria-label="Main navigation">{profileComplete && <><button className={profileTab === 'feed' || profileTab === 'member-profile' ? 'selected' : ''} onClick={() => setProfileTab('feed')} aria-label="Feed"><Home size={19} /><span>Feed</span></button><button className="mobile-post-action" onClick={() => { setProfileTab('profile'); setComposerOpen(true); setProfileNotice(null) }} aria-label="Create a post"><Plus size={24} /></button></>}<button className={!profileComplete || profileTab === 'settings' ? 'selected' : ''} onClick={openProfileSettings} aria-label={profileComplete ? 'Settings' : 'Complete profile'}><Settings size={19} /><span>{profileComplete ? 'Settings' : 'Complete'}</span></button></nav>
       </section>
     </main>

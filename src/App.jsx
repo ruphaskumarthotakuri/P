@@ -388,9 +388,7 @@ export default function App() {
     try {
       const [{ data: profileRow, error: profileError }, { data: postRows, error: postsError }] = await Promise.all([
         supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').eq('user_id', userId).single(),
-        userId === user.id
-          ? supabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at').eq('user_id', userId).order('created_at', { ascending: false })
-          : Promise.resolve({ data: [], error: null }),
+        supabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at').eq('user_id', userId).order('created_at', { ascending: false }),
       ])
       if (profileError) throw profileError
       if (postsError) throw postsError
