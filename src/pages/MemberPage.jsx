@@ -1,0 +1,93 @@
+import { ArrowLeft, ArrowUpRight, Camera, Facebook, Heart, Home, Instagram, MapPin, MessageCircle, Plus, Send, Settings, UserRound, Youtube } from 'lucide-react'
+import { useEffect } from 'react'
+import { FeedSkeleton, PostGridSkeleton, ProfileSkeleton } from '../components/Skeletons.jsx'
+
+export default function MemberPage({ app }) {
+  const {
+    profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings,
+    accountMenuOpen, setAccountMenuOpen, profile, avatarPreview, setAvatarPreview, saveProfile,
+    avatarFile, setAvatarFile, profileBusy, setProfile, locationBusy, detectLocation, feedError,
+    feedBusy, feedPosts, openMemberProfile, busyLikePosts, togglePostLike, busyCommentPost,
+    commentDrafts, setCommentDrafts, submitPostComment, viewedProfileBusy, viewedProfileError,
+    viewedProfile, viewedSocialLinks, viewedProfilePosts, socialLinks, posts, composerOpen,
+    setComposerOpen, setProfileNotice, publishPost, postFile, postPreview, setPostFile, setPostLocation,
+    postCaption, setPostCaption, postLocationBusy, postLocation, detectPostLocation, postBusy,
+    postsLoadError, postsBusy, supabase, setUser,
+  } = app
+
+  useEffect(() => {
+    if (!composerOpen || profileTab !== 'profile') return
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById('post-composer')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [composerOpen, profileTab])
+
+  return (
+    <main className="page member-page">
+      {profileNotice && <div className={`toast toast-${profileNotice.kind}`} role="status" aria-live="polite">{profileNotice.text}</div>}
+      <section className="member-shell">
+        <header className="member-topbar">
+          <a className="member-brand" href="#profile"><span className="brand-mark">N</span>Northstar</a>
+          <nav className="member-tabs" aria-label="Profile pages">
+            {profileComplete && <button className={profileTab === 'feed' || profileTab === 'member-profile' ? 'active' : ''} onClick={() => setProfileTab('feed')}>Feed</button>}
+            {profileComplete && <button className={profileTab === 'profile' ? 'active' : ''} onClick={() => setProfileTab('profile')}>My profile</button>}
+            <button className={!profileComplete || profileTab === 'settings' ? 'active' : ''} onClick={openProfileSettings}>{profileComplete ? 'Settings' : 'Complete profile'}</button>
+            {profileComplete && <button className="header-new-post" onClick={() => { setProfileTab('profile'); setComposerOpen(true); setProfileNotice(null) }}><Plus size={14} /> New post</button>}
+          </nav>
+          <div className="account-menu-wrap">
+            <button className="account-menu-trigger" type="button" aria-label="Account menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen(open => !open)}><UserRound size={19} /></button>
+            {accountMenuOpen && <div className="account-menu"><button type="button" onClick={() => { setProfileTab('profile'); setAccountMenuOpen(false) }}>My profile</button><button type="button" onClick={async () => { setAccountMenuOpen(false); await supabase.auth.signOut(); setUser(null); setProfileTab('profile') }}>Sign out</button></div>}
+          </div>
+        </header>
+
+        {!profileComplete || profileTab === 'settings' ? <section className="settings-content">
+          <div className="section-heading"><p className="eyebrow">ACCOUNT</p><h1>{profileComplete ? 'Profile settings' : 'Complete your profile'}</h1><p>{profileComplete ? 'Update your details and social links.' : 'Add the required details and profile photo to open your profile.'}</p></div>
+          <form className="profile-form settings-form" onSubmit={saveProfile}>
+            <div className="avatar-row">
+              {avatarPreview ? <img className="avatar-preview" src={avatarPreview} alt="Profile preview" /> : <div className="avatar-placeholder">Photo</div>}
+              <label>Profile picture<input type="file" accept="image/*" required={!profile.avatar_path && !profile.avatar_url} onChange={event => setAvatarFile(event.target.files?.[0] || null)} /></label>
+            </div>
+            <div className="settings-grid">
+              <label>Phone number<input type="tel" autoComplete="tel" value={profile.phone} onChange={event => setProfile({ ...profile, phone: event.target.value })} maxLength={20} required /></label>
+              <label>Education<input value={profile.education} onChange={event => setProfile({ ...profile, education: event.target.value })} minLength={2} maxLength={120} required /></label>
+              <label>Description<textarea rows="3" maxLength={2000} value={profile.description} onChange={event => setProfile({ ...profile, description: event.target.value })} required /></label>
+              <div className="location-field"><label htmlFor="profile-location">Location</label><div className="location-input-row"><input id="profile-location" autoComplete="address-level2" value={profile.location} onChange={event => setProfile({ ...profile, location: event.target.value, latitude: '', longitude: '' })} minLength={2} maxLength={200} required /><button className="detect-location-button" type="button" onClick={detectLocation} disabled={locationBusy}>{locationBusy ? 'Detecting…' : 'Detect'}</button></div><span className="location-required-note">Detect your location to save its coordinates.</span></div>
+              <label>Church or organization<input value={profile.church_name} onChange={event => setProfile({ ...profile, church_name: event.target.value })} minLength={2} maxLength={120} required /></label>
+              <label>Church / organization location<input value={profile.church_location} onChange={event => setProfile({ ...profile, church_location: event.target.value })} maxLength={200} placeholder="City, area, or address" /></label>
+            </div>
+            <div className="social-settings"><h2>Social links</h2><label>Instagram<input type="url" placeholder="https://instagram.com/username" value={profile.instagram_url} onChange={event => setProfile({ ...profile, instagram_url: event.target.value })} /></label><label>Facebook<input type="url" placeholder="https://facebook.com/your-page" value={profile.facebook_url} onChange={event => setProfile({ ...profile, facebook_url: event.target.value })} /></label><label>YouTube<input type="url" placeholder="https://youtube.com/@channel" value={profile.youtube_url} onChange={event => setProfile({ ...profile, youtube_url: event.target.value })} /></label></div>
+            <button className="primary-button save-settings" type="submit" disabled={profileBusy}>{profileBusy ? 'Saving…' : 'Save settings'}</button>
+          </form>
+        </section> : profileTab === 'feed' ? <section className="feed-content">
+          <header className="feed-heading"><div><p className="eyebrow">COMMUNITY</p><h1>Member feed</h1><p>Recent photos shared by members.</p></div></header>
+          {feedError ? <p className="posts-setup-note" role="status">{feedError}</p> : feedBusy ? <FeedSkeleton /> : feedPosts.length ? <div className="feed-list">{feedPosts.map(post => <article className="feed-post" key={post.id}>
+            <header className="feed-post-header"><button className="feed-author" onClick={() => openMemberProfile(post.user_id)}>{post.author?.avatar_url ? <img src={post.author.avatar_url} alt="" /> : <span className="feed-avatar-fallback">{(post.author?.full_name || 'M').slice(0, 1).toUpperCase()}</span>}<span><strong>{post.author?.full_name || 'Member'}{post.author?.is_verified && <span className="verified-tick" role="img" aria-label="Verified member" title="Verified member">✓</span>}</strong><small>{post.author?.location || 'View member profile'}</small></span></button><time>{new Date(post.created_at).toLocaleDateString()}</time></header>
+            {post.image_url ? <img className="feed-post-image" src={post.image_url} alt={post.caption || 'Member post'} /> : <div className="post-image-missing">Photo unavailable</div>}
+            <div className="feed-post-content">{post.caption && <p>{post.caption}</p>}<span><MapPin size={13} /> {post.location}</span>
+              <div className="post-actions"><button type="button" className={`post-action ${post.liked_by_me ? 'liked' : ''}`} onClick={() => togglePostLike(post)} disabled={busyLikePosts.includes(post.id)} aria-pressed={post.liked_by_me}><Heart size={17} fill={post.liked_by_me ? 'currentColor' : 'none'} /> <span>{post.like_count} {post.like_count === 1 ? 'Like' : 'Likes'}</span></button><span className="post-action-count"><MessageCircle size={16} /> {post.comments.length} {post.comments.length === 1 ? 'Comment' : 'Comments'}</span></div>
+              {post.comments.length > 0 && <div className="post-comments">{post.comments.map(comment => <p key={comment.id}><strong>{comment.author_name}</strong> {comment.content}</p>)}</div>}
+              <form className="post-comment-form" onSubmit={event => submitPostComment(event, post)}><input aria-label="Write a comment" maxLength={1000} placeholder="Write a comment…" value={commentDrafts[post.id] || ''} onChange={event => setCommentDrafts(current => ({ ...current, [post.id]: event.target.value }))} /><button type="submit" aria-label="Send comment" disabled={!commentDrafts[post.id]?.trim() || busyCommentPost === post.id}>{busyCommentPost === post.id ? 'Sending…' : <Send size={16} />}</button></form>
+            </div>
+          </article>)}</div> : <div className="posts-empty feed-empty"><span className="empty-camera"><Camera size={21} /></span><strong>No member posts yet</strong><p>When members share photos, they’ll appear here.</p></div>}
+        </section> : profileTab === 'member-profile' ? <section className="public-member-content">
+          <button className="back-to-feed" onClick={() => setProfileTab('feed')}><ArrowLeft size={15} /> Back to feed</button>
+          {viewedProfileBusy ? <ProfileSkeleton /> : viewedProfileError ? <p className="posts-setup-note" role="status">{viewedProfileError}</p> : viewedProfile && <><section className="profile-overview public-profile-overview">{viewedProfile.avatar_url ? <img className="profile-large-avatar" src={viewedProfile.avatar_url} alt="" /> : <div className="profile-large-avatar profile-avatar-empty">{(viewedProfile.full_name || 'M').slice(0, 1).toUpperCase()}</div>}<div className="profile-identity"><div className="profile-name-row"><h1>{viewedProfile.full_name || 'Member'}</h1>{viewedProfile.is_verified && <span className="verified-tick" role="img" aria-label="Verified member" title="Verified member">✓</span>}</div><p>{viewedProfile.description || 'No description added.'}</p><div className="profile-socials">{viewedSocialLinks.map(link => <a key={link.label} href={link.url} target="_blank" rel="noreferrer">{link.label === 'Instagram' ? <Instagram size={14} /> : link.label === 'Facebook' ? <Facebook size={14} /> : <Youtube size={14} />}{link.label}<ArrowUpRight size={12} /></a>)}</div></div></section>
+            <section className="profile-details public-profile-details"><div><span>Education</span><strong>{viewedProfile.education || '—'}</strong></div><div><span>Location</span><strong>{viewedProfile.location || '—'}</strong></div><div><span>Church / organization</span><strong>{viewedProfile.church_name || '—'}</strong></div><div><span>Church location</span><strong>{viewedProfile.church_location || '—'}</strong></div></section>
+            {viewedProfile.user_id === user.id ? <section className="posts-section"><header className="posts-heading"><div><p className="eyebrow">YOUR PHOTOS</p><h2>My posts <span>{viewedProfilePosts.length}</span></h2></div></header>{viewedProfilePosts.length ? <div className="posts-grid">{viewedProfilePosts.map(post => <article className="post-card" key={post.id}>{post.image_url ? <img src={post.image_url} alt={post.caption || 'Member post'} /> : <div className="post-image-missing">Photo unavailable</div>}<div className="post-card-info">{post.caption && <p>{post.caption}</p>}<span><MapPin size={12} /> {post.location}</span><time>{new Date(post.created_at).toLocaleDateString()}</time></div></article>)}</div> : <div className="posts-empty"><strong>No posts yet</strong></div>}</section> : <section className="posts-section"><p className="private-posts-note">This member’s photos are visible to them on their profile. View shared posts in the feed.</p></section>}</>}
+        </section> : <>
+          <section className="profile-overview" id="profile">
+            {avatarPreview ? <img className="profile-large-avatar" src={avatarPreview} alt="Profile" onError={() => { setAvatarPreview(''); setProfileNotice({ kind: 'error', text: 'Profile photo could not load. Please upload it again in Settings.' }) }} /> : <div className="profile-large-avatar profile-avatar-empty">{(profile.full_name || user.email || 'U').slice(0, 1).toUpperCase()}</div>}
+            <div className="profile-identity"><div className="profile-name-row"><h1>{profile.full_name || 'Your profile'}</h1>{user.app_metadata?.is_verified && <span className="verified-badge" aria-label="Verified profile">✓ Verified</span>}</div><p>{user.email}</p><p>{profile.description || 'Add a short description in your settings.'}</p><div className="profile-socials">{socialLinks.map(link => <a key={link.label} href={link.url} target="_blank" rel="noreferrer">{link.label === 'Instagram' ? <Instagram size={14} /> : link.label === 'Facebook' ? <Facebook size={14} /> : <Youtube size={14} />}{link.label}<ArrowUpRight size={12} /></a>)}</div></div>
+          </section>
+          <section className="profile-details"><div><span>Phone</span><strong>{profile.phone || '—'}</strong></div><div><span>Education</span><strong>{profile.education || '—'}</strong></div><div><span>Location</span><strong>{profile.location || '—'}</strong></div><div><span>Church / organization</span><strong>{profile.church_name || '—'}</strong></div><div><span>Church location</span><strong>{profile.church_location || '—'}</strong></div></section>
+          <section className="posts-section"><header className="posts-heading"><div><p className="eyebrow">YOUR PHOTOS</p><h2>My posts <span>{posts.length}</span></h2></div><button type="button" className="primary-button new-post-button" onClick={() => { setComposerOpen(open => !open); setProfileNotice(null) }}>{composerOpen ? 'Close' : <><Plus size={15} /> New post</>}</button></header>
+            {composerOpen && <form id="post-composer" className="post-composer" onSubmit={publishPost}><div className="composer-fields"><label className="post-photo-picker">{postPreview ? <img src={postPreview} alt="Selected post" /> : <span><b><Camera size={22} /></b>Choose or capture a photo</span>}<input type="file" accept="image/*" capture="environment" onChange={event => { setPostFile(event.target.files?.[0] || null); setPostLocation(null) }} /></label><div className="composer-side"><label>Caption<textarea rows="4" maxLength="2000" value={postCaption} onChange={event => setPostCaption(event.target.value)} placeholder="Write a caption…" /></label><div className="post-location-row"><button className="detect-location-button" type="button" onClick={detectPostLocation} disabled={postLocationBusy}>{postLocationBusy ? 'Finding location…' : postLocation ? <><MapPin size={13} /> Location added</> : <><MapPin size={13} /> Add photo location</>}</button><span>{postLocation?.location || 'Required before posting'}</span></div><p className="location-required-note">A location must be attached before the image can be uploaded.</p><button className="primary-button publish-button" type="submit" disabled={postBusy || !postFile || !postLocation}>{postBusy ? 'Uploading…' : 'Share post'}</button></div></div></form>}
+            {postsLoadError ? <p className="posts-setup-note" role="status">{postsLoadError}</p> : postsBusy ? <PostGridSkeleton count={3} /> : posts.length ? <div className="posts-grid">{posts.map(post => <article className="post-card" key={post.id}>{post.image_url ? <img src={post.image_url} alt={post.caption || 'Profile post'} /> : <div className="post-image-missing">Photo unavailable</div>}<div className="post-card-info">{post.caption && <p>{post.caption}</p>}<span><MapPin size={12} /> {post.location}</span><time>{new Date(post.created_at).toLocaleDateString()}</time></div></article>)}</div> : <div className="posts-empty"><span className="empty-camera"><Camera size={21} /></span><strong>No posts yet</strong><p>Share a photo and it will appear here on your profile.</p><button className="empty-post-button" onClick={() => setComposerOpen(true)}>Create your first post</button></div>}
+          </section>
+        </>}
+        <nav className="mobile-bottom-bar" aria-label="Main navigation">{profileComplete && <><button className={profileTab === 'feed' || profileTab === 'member-profile' ? 'selected' : ''} onClick={() => setProfileTab('feed')} aria-label="Feed"><Home size={19} /><span>Feed</span></button><button className="mobile-post-action" onClick={() => { setProfileTab('profile'); setComposerOpen(true); setProfileNotice(null) }} aria-label="Create a post"><Plus size={24} /></button></>}<button className={!profileComplete || profileTab === 'settings' ? 'selected' : ''} onClick={openProfileSettings} aria-label={profileComplete ? 'Settings' : 'Complete profile'}><Settings size={19} /><span>{profileComplete ? 'Settings' : 'Complete'}</span></button></nav>
+      </section>
+    </main>
+  )
+}
