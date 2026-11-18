@@ -130,6 +130,8 @@ export default function App() {
   const [busyCommentPost, setBusyCommentPost] = useState('')
   const [viewedProfile, setViewedProfile] = useState(null)
   const [viewedProfilePosts, setViewedProfilePosts] = useState([])
+  const [viewedFollowStats, setViewedFollowStats] = useState(null)
+  const [profileFollowStats, setProfileFollowStats] = useState(null)
   const [viewedProfileBusy, setViewedProfileBusy] = useState(false)
   const [viewedProfileError, setViewedProfileError] = useState('')
   const [postFile, setPostFile] = useState(null)
@@ -342,8 +344,7 @@ export default function App() {
       : Promise.resolve({ data: [], error: null })
     const { data: discoveryRows, error: discoveryError } = await discoveryQuery
     if (discoveryError) throw discoveryError
-    const discoveryRank = new Map(discoveryIds.map((id, index) => [id, index]))
-    const discoveryPosts = (discoveryRows || []).sort((a, b) => (discoveryRank.get(a.user_id) ?? Infinity) - (discoveryRank.get(b.user_id) ?? Infinity))
+    const discoveryPosts = discoveryRows || []
     const postsPage = [...followedPosts, ...discoveryPosts]
     const ids = [...new Set(postsPage.map(post => post.user_id))]
     const postIds = postsPage.map(post => post.id)
@@ -396,6 +397,15 @@ export default function App() {
     return () => { active = false }
   }, [profileTab, user?.id, feedRefresh])
 
+  useEffect(() => {
+    if (profileTab !== 'profile' || !user || !supabase) return
+    let active = true
+    memberApi(`/api/follows/${user.id}`)
+      .then(stats => { if (active) setProfileFollowStats({ ...stats, userId: user.id }) })
+      .catch(() => { if (active) setProfileFollowStats({ followers: 0, following: 0, userId: user.id }) })
+    return () => { active = false }
+  }, [profileTab, user?.id, feedRefresh])
+
   async function loadMoreFeedPosts() {
     if (!supabase || !user || feedMoreBusy || !feedHasMore) return
     setFeedMoreBusy(true)
@@ -413,10 +423,12 @@ export default function App() {
   async function toggleMemberFollow(memberId) {
     if (!memberId || memberId === user?.id || followBusyIds.includes(memberId)) return
     setFollowBusyIds(current => [...current, memberId])
-    const currentlyFollowing = feedFollowingIds.includes(memberId)
+    const currentlyFollowing = viewedFollowStats?.userId === memberId ? viewedFollowStats.isFollowing : feedFollowingIds.includes(memberId)
     try {
       await memberApi(`/api/follows/${memberId}`, { method: currentlyFollowing ? 'DELETE' : 'PUT' })
       setFeedFollowingIds(current => currentlyFollowing ? current.filter(id => id !== memberId) : [...current, memberId])
+      setViewedFollowStats(current => current?.userId === memberId ? { ...current, isFollowing: !currentlyFollowing, followers: Math.max(0, (current.followers || 0) + (currentlyFollowing ? -1 : 1)) } : current)
+      setProfileFollowStats(current => current ? { ...current, following: Math.max(0, (current.following || 0) + (currentlyFollowing ? -1 : 1)) } : current)
       setFeedRefresh(value => value + 1)
     } catch (error) {
       setProfileNotice({ kind: 'error', text: `Could not update follow. ${error.message}` })
@@ -425,16 +437,17 @@ export default function App() {
     }
   }
 
-  async function loadPostComments(post) {
+  async function loadPostComments(post, loadAll = false) {
     if (!supabase || loadingCommentPost === post.id) return
     const offset = post.comments_loaded ? post.comments.length : 0
+    const batchSize = loadAll ? Math.max(0, (post.comments_total || 0) - offset) : COMMENT_PAGE_SIZE
     setLoadingCommentPost(post.id)
     try {
       const { data, count, error } = await supabase.from('post_comments')
         .select('id, post_id, user_id, content, created_at', { count: 'exact' })
         .eq('post_id', post.id)
         .order('created_at', { ascending: false })
-        .range(offset, offset + COMMENT_PAGE_SIZE - 1)
+        .range(offset, offset + batchSize - 1)
       if (error) throw error
       const commentUserIds = [...new Set((data || []).map(comment => comment.user_id))]
       const { data: commentProfiles, error: profilesError } = commentUserIds.length
@@ -490,9 +503,10 @@ export default function App() {
     setViewedProfile(null)
     setViewedProfilePosts([])
     try {
-      const [{ data: profileRow, error: profileError }, { data: postRows, error: postsError }] = await Promise.all([
+      const [{ data: profileRow, error: profileError }, { data: postRows, error: postsError }, followStats] = await Promise.all([
         supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').eq('user_id', userId).single(),
         supabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at').eq('user_id', userId).order('created_at', { ascending: false }),
+        memberApi(`/api/follows/${userId}`),
       ])
       if (profileError) throw profileError
       if (postsError) throw postsError
@@ -500,6 +514,7 @@ export default function App() {
       const verifiedUsers = await fetchVerifiedUsers([userId])
       setViewedProfile({ ...result.profiles[0], is_verified: Boolean(verifiedUsers[userId]) })
       setViewedProfilePosts(result.posts)
+      setViewedFollowStats({ ...followStats, userId })
       setProfileTab('member-profile')
     } catch (error) {
       setViewedProfileError(`Could not open this profile. Run supabase/posts-schema.sql in Supabase SQL Editor. (${error.message})`)
@@ -556,7 +571,7 @@ export default function App() {
       const comment = { ...data, author_name: profile.full_name || user.user_metadata?.full_name || 'You' }
       setFeedPosts(current => current.map(item => item.id === post.id ? {
         ...item,
-        comments: item.comments_loaded ? [comment, ...item.comments].slice(0, COMMENT_PAGE_SIZE) : item.comments,
+        comments: item.comments_loaded ? [comment, ...item.comments] : item.comments,
         comments_total: item.comments_total == null ? null : item.comments_total + 1,
       } : item))
       setCommentDrafts(current => ({ ...current, [post.id]: '' }))
@@ -986,8 +1001,8 @@ export default function App() {
     profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings, accountMenuOpen,
     setAccountMenuOpen, profile, avatarPreview, setAvatarPreview, saveProfile, avatarFile, setAvatarFile,
     profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, feedHasMore, feedMoreBusy, loadMoreFeedPosts, feedFollowingIds, followBusyIds, toggleMemberFollow, openMemberProfile,
-    busyLikePosts, togglePostLike, busyCommentPost, commentDrafts, setCommentDrafts, submitPostComment, loadingCommentPost, loadPostComments,
-    viewedProfileBusy, viewedProfileError, viewedProfile, viewedSocialLinks, viewedProfilePosts, socialLinks,
+    busyLikePosts, togglePostLike, busyCommentPost, commentDrafts, setCommentDrafts, submitPostComment, loadingCommentPost, loadPostComments, loadAllPostComments: post => loadPostComments(post, true),
+    viewedProfileBusy, viewedProfileError, viewedProfile, viewedSocialLinks, viewedProfilePosts, viewedFollowStats, profileFollowStats, socialLinks,
     posts, composerOpen, setComposerOpen, setProfileNotice, publishPost, postFile, postPreview, setPostFile,
     setPostLocation, postCaption, setPostCaption, postLocationBusy, postLocation, detectPostLocation, postBusy,
     postsLoadError, postsBusy, supabase, setUser,

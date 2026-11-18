@@ -106,6 +106,36 @@ app.get('/api/feed/ordering', async (req, res) => {
   }
 })
 
+app.get('/api/follows/:userId', async (req, res) => {
+  if (!adminSupabase) return res.status(503).json({ error: 'Supabase server access is not configured.' })
+  try {
+    const user = await getMemberForRequest(req)
+    if (!user) return res.status(401).json({ error: 'Sign in to view member stats.' })
+    const profileId = String(req.params.userId || '')
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    if (!uuidPattern.test(profileId)) return res.status(400).json({ error: 'Choose a valid member profile.' })
+
+    const statsKey = `northstar:follow-stats:${profileId}`
+    let stats = null
+    if (redis) { try { stats = await redis.get(statsKey) } catch { /* Read counts from Supabase when cache is unavailable. */ } }
+    if (!stats || typeof stats.followers !== 'number' || typeof stats.following !== 'number') {
+      const [followersResult, followingResult] = await Promise.all([
+        adminSupabase.from('follows').select('follower_id', { count: 'exact', head: true }).eq('following_id', profileId),
+        adminSupabase.from('follows').select('following_id', { count: 'exact', head: true }).eq('follower_id', profileId),
+      ])
+      if (followersResult.error) throw followersResult.error
+      if (followingResult.error) throw followingResult.error
+      stats = { followers: followersResult.count || 0, following: followingResult.count || 0 }
+      if (redis) { try { await redis.set(statsKey, stats, { ex: 60 }) } catch { /* Supabase remains the source of truth. */ } }
+    }
+    const { data: relation, error } = await adminSupabase.from('follows').select('follower_id').eq('follower_id', user.id).eq('following_id', profileId).maybeSingle()
+    if (error) throw error
+    return res.json({ ...stats, isFollowing: Boolean(relation), isSelf: user.id === profileId })
+  } catch (error) {
+    return res.status(503).json({ error: error.message || 'Could not load member follow stats.' })
+  }
+})
+
 app.put('/api/follows/:userId', async (req, res) => {
   if (!adminSupabase) return res.status(503).json({ error: 'Supabase server access is not configured.' })
   try {
@@ -119,7 +149,7 @@ app.put('/api/follows/:userId', async (req, res) => {
     if (!target) return res.status(404).json({ error: 'That member profile no longer exists.' })
     const { error } = await adminSupabase.from('follows').upsert({ follower_id: user.id, following_id: followingId }, { onConflict: 'follower_id,following_id', ignoreDuplicates: true })
     if (error) throw error
-    if (redis) { try { await redis.del(`northstar:follows:${user.id}`) } catch { /* Follow writes have already succeeded in Supabase. */ } }
+    if (redis) { try { await redis.del(`northstar:follows:${user.id}`, `northstar:follow-stats:${user.id}`, `northstar:follow-stats:${followingId}`) } catch { /* Follow writes have already succeeded in Supabase. */ } }
     return res.json({ following: true })
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not follow this member.' })
@@ -136,7 +166,7 @@ app.delete('/api/follows/:userId', async (req, res) => {
     if (!uuidPattern.test(followingId) || followingId === user.id) return res.status(400).json({ error: 'Choose a valid member.' })
     const { error } = await adminSupabase.from('follows').delete().eq('follower_id', user.id).eq('following_id', followingId)
     if (error) throw error
-    if (redis) { try { await redis.del(`northstar:follows:${user.id}`) } catch { /* Follow writes have already succeeded in Supabase. */ } }
+    if (redis) { try { await redis.del(`northstar:follows:${user.id}`, `northstar:follow-stats:${user.id}`, `northstar:follow-stats:${followingId}`) } catch { /* Follow writes have already succeeded in Supabase. */ } }
     return res.json({ following: false })
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not update this follow.' })
