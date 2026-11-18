@@ -697,6 +697,7 @@ export default function App() {
       if (error) throw error
       const { error: publicProfileError } = await supabase.from('profiles').upsert(toPublicProfile(user.id, metadata), { onConflict: 'user_id' })
       if (publicProfileError) throw new Error(`Profile details saved, but public profile sync failed. Run supabase/posts-schema.sql in Supabase SQL Editor. (${publicProfileError.message})`)
+      await memberApi('/api/feed/cache/invalidate', { method: 'POST' }).catch(() => {})
       if (data.user) setUser({ ...user, user_metadata: data.user.user_metadata })
       setProfile(metadata)
       setAvatarFile(null)
