@@ -223,8 +223,7 @@ app.post('/api/admin/login', (req, res) => {
     return res.status(503).json({ error: 'Admin credentials are not configured on the server.' })
   }
   if (process.env.NODE_ENV === 'production' && adminPassword === 'admin') {
-    return res.status(503).json({ error: 'Set a strong ADMIN_PASSWORD before enabling admin access in production.' })
-  }
+    
   const email = String(req.body?.email || '').trim()
   const password = String(req.body?.password || '')
   const attemptKey = req.ip || req.socket.remoteAddress || 'unknown'
