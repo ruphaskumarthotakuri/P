@@ -136,6 +136,7 @@ export default function App() {
   const [adminMessageNotice, setAdminMessageNotice] = useState(null)
   const [whatsappAdminStatus, setWhatsappAdminStatus] = useState(null)
   const [whatsappStatusError, setWhatsappStatusError] = useState('')
+  const [whatsappUnlinkBusy, setWhatsappUnlinkBusy] = useState(false)
   const [bulkMessageResults, setBulkMessageResults] = useState([])
   const isSignup = mode === 'signup'
   const profileComplete = isProfileComplete(profile)
@@ -154,10 +155,13 @@ export default function App() {
     { label: 'YouTube', url: viewedProfile?.youtube_url },
   ].filter(({ url }) => typeof url === 'string' && /^https?:\/\/[^\s]+$/i.test(url.trim()))
   const whatsappDisplayTitle = whatsappStatusError ? 'WhatsApp status unavailable'
+    : whatsappAdminStatus?.serverless ? 'WhatsApp needs a persistent backend'
     : whatsappAdminStatus?.authorized ? 'WhatsApp linked'
       : whatsappAdminStatus?.connected ? (whatsappAdminStatus.expectedNumber ? 'WhatsApp account mismatch' : 'Set the sender number')
         : 'Link WhatsApp'
-  const whatsappDisplayMessage = whatsappStatusError || (whatsappAdminStatus?.bulkProgress
+  const whatsappDisplayMessage = whatsappStatusError || (whatsappAdminStatus?.serverless
+    ? 'Vercel serverless cannot keep the WhatsApp connection running. To unlink an existing device, remove Northstar in WhatsApp → Linked devices.'
+    : whatsappAdminStatus?.bulkProgress
     ? `Sending ${whatsappAdminStatus.bulkProgress.processed + 1} of ${whatsappAdminStatus.bulkProgress.total} to members. Sent ${whatsappAdminStatus.bulkProgress.sent} so far.`
     : whatsappAdminStatus?.authorized
       ? `Connected as ${whatsappAdminStatus.actualNumber}.`
@@ -781,6 +785,21 @@ export default function App() {
     }
   }
 
+  async function unlinkWhatsApp() {
+    setWhatsappUnlinkBusy(true)
+    try {
+      const response = await fetch('/api/admin/whatsapp/unlink', { method: 'POST' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not unlink WhatsApp.')
+      setWhatsappAdminStatus(result)
+      setWhatsappStatusError('')
+    } catch (error) {
+      setWhatsappStatusError(error.message)
+    } finally {
+      setWhatsappUnlinkBusy(false)
+    }
+  }
+
   async function setVerified(userId, verified) {
     setVerificationBusy(userId)
     setAdminNotice(null)
@@ -857,7 +876,7 @@ export default function App() {
     filteredAdminUsers, exportUsers, setVerified, deleteUserAccount, messageTarget, setMessageTarget, adminMessage,
     selectedMemberIds, setSelectedMemberIds, selectedVerifiedUsers, verifiedUsers,
     setAdminMessage, adminMessageBusy, adminMessageNotice, setAdminMessageNotice, sendWhatsAppMessage,
-    whatsappAdminStatus, whatsappStatusError, whatsappDisplayTitle, whatsappDisplayMessage, bulkMessageResults, setBulkMessageResults,
+    whatsappAdminStatus, whatsappStatusError, whatsappDisplayTitle, whatsappDisplayMessage, whatsappUnlinkBusy, unlinkWhatsApp, bulkMessageResults, setBulkMessageResults,
     profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings, accountMenuOpen,
     setAccountMenuOpen, profile, avatarPreview, setAvatarPreview, saveProfile, avatarFile, setAvatarFile,
     profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, openMemberProfile,

@@ -6,10 +6,11 @@ import { fileURLToPath } from 'node:url'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import ExcelJS from 'exceljs'
-import { normalizeWhatsAppNumber, sendWhatsAppText, startWhatsApp, whatsappAdminStatus, whatsappStatus } from './whatsapp.js'
+import { normalizeWhatsAppNumber, sendWhatsAppText, startWhatsApp, unlinkWhatsApp, whatsappAdminStatus, whatsappStatus } from './whatsapp.js'
 
 const app = express()
 const port = process.env.PORT || 3002
+const runningOnVercel = Boolean(process.env.VERCEL || process.env.VERCEL_ENV || process.env.AWS_LAMBDA_FUNCTION_NAME)
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const supabaseKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
 // Admin credentials and Supabase secret keys stay on the server.
@@ -315,9 +316,20 @@ app.get('/api/admin/users', requireAdmin, async (_req, res) => {
 
 app.get('/api/admin/whatsapp/status', requireAdmin, async (_req, res) => {
   try {
-    return res.json({ ...await whatsappAdminStatus(), bulkProgress: whatsappBulkProgress })
+    return res.json({ ...await whatsappAdminStatus(), bulkProgress: whatsappBulkProgress, serverless: runningOnVercel })
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not read WhatsApp connection status.' })
+  }
+})
+
+app.post('/api/admin/whatsapp/unlink', requireAdmin, async (_req, res) => {
+  if (runningOnVercel) {
+    return res.status(503).json({ error: 'WhatsApp cannot be unlinked from this Vercel serverless deployment. Remove Northstar from WhatsApp → Linked devices.' })
+  }
+  try {
+    return res.json({ unlinked: true, ...await unlinkWhatsApp() })
+  } catch (error) {
+    return res.status(503).json({ error: error.message || 'Could not unlink WhatsApp.' })
   }
 })
 
@@ -551,8 +563,6 @@ app.use(express.static(distDir))
 app.get(/.*/, (_req, res, next) => {
   res.sendFile(path.join(distDir, 'index.html'), error => error && next())
 })
-
-const runningOnVercel = Boolean(process.env.VERCEL || process.env.VERCEL_ENV || process.env.AWS_LAMBDA_FUNCTION_NAME)
 
 if (!runningOnVercel) {
   app.listen(port, () => {

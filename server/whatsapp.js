@@ -10,6 +10,7 @@ let pendingQr = null
 let pendingQrCodeDataUrl = null
 let connecting = false
 let reconnectTimer = null
+let unlinkingSocket = null
 
 export function normalizeWhatsAppNumber(value) {
   if (value == null || value === '') throw new Error('INVALID_PHONE')
@@ -92,6 +93,10 @@ async function connect() {
         socket = null
         pendingQr = null
         pendingQrCodeDataUrl = null
+        if (unlinkingSocket === nextSocket) {
+          unlinkingSocket = null
+          return
+        }
         const statusCode = lastDisconnect?.error?.output?.statusCode
         if (statusCode === DisconnectReason.loggedOut) {
           console.error('WhatsApp session logged out. Preparing a fresh link QR.')
@@ -109,4 +114,29 @@ async function connect() {
 
 export function startWhatsApp() {
   connect().catch(error => console.error('WhatsApp startup failed:', error.message))
+}
+
+export async function unlinkWhatsApp() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+
+  const activeSocket = socket
+  pendingQr = null
+  pendingQrCodeDataUrl = null
+
+  if (activeSocket) {
+    unlinkingSocket = activeSocket
+    try {
+      await activeSocket.logout()
+    } finally {
+      activeSocket.end(undefined)
+      if (socket === activeSocket) socket = null
+    }
+  }
+
+  await fs.rm(authDirectory, { recursive: true, force: true })
+  scheduleReconnect(1500)
+  return whatsappStatus()
 }
