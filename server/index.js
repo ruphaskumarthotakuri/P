@@ -544,6 +544,10 @@ app.get('/api/admin/users/export', requireAdmin, async (_req, res) => {
   }
 })
 
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` })
+})
+
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
 const distDir = path.resolve(rootDir, '../dist')
 app.use(express.static(distDir))
@@ -551,7 +555,13 @@ app.get(/.*/, (_req, res, next) => {
   res.sendFile(path.join(distDir, 'index.html'), error => error && next())
 })
 
-app.listen(port, () => {
-  console.log(`Northstar API listening on http://localhost:${port}`)
-  startWhatsApp()
-})
+const runningOnVercel = Boolean(process.env.VERCEL || process.env.VERCEL_ENV || process.env.AWS_LAMBDA_FUNCTION_NAME)
+
+if (!runningOnVercel) {
+  app.listen(port, () => {
+    console.log(`Northstar API listening on http://localhost:${port}`)
+    startWhatsApp()
+  })
+}
+
+export default app

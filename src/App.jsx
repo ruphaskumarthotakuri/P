@@ -737,7 +737,12 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: adminEmail, password: adminPassword }),
       })
-      const result = await response.json()
+      let result
+      try {
+        result = await response.json()
+      } catch {
+        throw new Error('The admin API returned a web page instead of JSON. Start the backend on port 3002 and open this app at http://localhost:3001.')
+      }
       if (!response.ok) throw new Error(result.error || 'Admin sign in failed.')
       setAdminAuthenticated(true)
       setAdminView(true)
@@ -858,7 +863,7 @@ export default function App() {
     profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, openMemberProfile,
     busyLikePosts, togglePostLike, busyCommentPost, commentDrafts, setCommentDrafts, submitPostComment,
     viewedProfileBusy, viewedProfileError, viewedProfile, viewedSocialLinks, viewedProfilePosts, socialLinks,
-    posts, composerOpen, setComposerOpen, setProfileNotice, publishPost, postPreview, setPostFile,
+    posts, composerOpen, setComposerOpen, setProfileNotice, publishPost, postFile, postPreview, setPostFile,
     setPostLocation, postCaption, setPostCaption, postLocationBusy, postLocation, detectPostLocation, postBusy,
     postsLoadError, postsBusy, supabase, setUser,
   }
