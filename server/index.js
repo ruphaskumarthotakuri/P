@@ -222,8 +222,6 @@ app.post('/api/admin/login', (req, res) => {
   if (!adminEmail || !adminPassword || !adminSessionSecret) {
     return res.status(503).json({ error: 'Admin credentials are not configured on the server.' })
   }
-  if (process.env.NODE_ENV === 'production' && adminPassword === 'admin') {
-    
   const email = String(req.body?.email || '').trim()
   const password = String(req.body?.password || '')
   const attemptKey = req.ip || req.socket.remoteAddress || 'unknown'
