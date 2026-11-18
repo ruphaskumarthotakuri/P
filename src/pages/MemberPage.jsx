@@ -17,6 +17,7 @@ export default function MemberPage({ app }) {
   const galleryInputRef = useRef(null)
   const cameraFallbackInputRef = useRef(null)
   const cameraVideoRef = useRef(null)
+  const feedScrollSentinelRef = useRef(null)
   const [cameraStream, setCameraStream] = useState(null)
 
   useEffect(() => {
@@ -36,6 +37,30 @@ export default function MemberPage({ app }) {
     }
     return () => cameraStream.getTracks().forEach(track => track.stop())
   }, [cameraStream])
+
+  useEffect(() => {
+    if (profileTab !== 'feed' || !feedHasMore || feedMoreBusy || !feedScrollSentinelRef.current) return
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) loadMoreFeedPosts()
+    }, { rootMargin: '500px 0px' })
+    observer.observe(feedScrollSentinelRef.current)
+    return () => observer.disconnect()
+  }, [profileTab, feedHasMore, feedMoreBusy, feedPosts.length, loadMoreFeedPosts])
+
+  useEffect(() => {
+    if (profileTab !== 'feed' || !feedPosts.length) return
+    const observers = []
+    document.querySelectorAll('.comment-load-sentinel[data-post-id]').forEach(sentinel => {
+      const observer = new IntersectionObserver(entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return
+        const post = feedPosts.find(item => item.id === sentinel.dataset.postId)
+        if (post && post.comments_loaded && post.comments.length < (post.comments_total || 0)) loadPostComments(post)
+      }, { root: sentinel.parentElement, rootMargin: '0px 0px 40px 0px' })
+      observer.observe(sentinel)
+      observers.push(observer)
+    })
+    return () => observers.forEach(observer => observer.disconnect())
+  }, [profileTab, feedPosts, loadingCommentPost, loadPostComments])
 
   function choosePostFile(event) {
     const file = event.currentTarget.files?.[0]
@@ -125,10 +150,10 @@ export default function MemberPage({ app }) {
             <div className="feed-post-content">{post.caption && <p>{post.caption}</p>}<span><MapPin size={13} /> {post.location}</span>
               <div className="post-actions"><button type="button" className={`post-action ${post.liked_by_me ? 'liked' : ''}`} onClick={() => togglePostLike(post)} disabled={busyLikePosts.includes(post.id)} aria-pressed={post.liked_by_me}><Heart size={17} fill={post.liked_by_me ? 'currentColor' : 'none'} /> <span>{post.like_count} {post.like_count === 1 ? 'Like' : 'Likes'}</span></button><button type="button" className="post-action-count" onClick={() => loadPostComments(post)} disabled={loadingCommentPost === post.id}><MessageCircle size={16} /> {post.comments_loaded ? `${post.comments_total} ${post.comments_total === 1 ? 'Comment' : 'Comments'}` : loadingCommentPost === post.id ? 'Loading comments…' : 'View comments'}</button></div>
               {post.comments_loaded && post.comments.length > 0 && <div className="post-comments">{post.comments.slice(0, 2).map(comment => <p key={comment.id}><strong>{comment.author_name}</strong> {comment.content}</p>)}</div>}
-              {post.comments_loaded && post.comments.length < (post.comments_total || 0) && <button className="load-comments-button" type="button" onClick={() => loadPostComments(post)} disabled={loadingCommentPost === post.id}>{loadingCommentPost === post.id ? 'Loading…' : 'Load 2 more comments'}</button>}
+              {post.comments_loaded && post.comments.length < (post.comments_total || 0) && <span className="comment-load-sentinel" data-post-id={post.id} aria-hidden="true">{loadingCommentPost === post.id ? 'Loading comments…' : ''}</span>}
               <form className="post-comment-form" onSubmit={event => submitPostComment(event, post)}><input aria-label="Write a comment" maxLength={1000} placeholder="Write a comment…" value={commentDrafts[post.id] || ''} onChange={event => setCommentDrafts(current => ({ ...current, [post.id]: event.target.value }))} /><button type="submit" aria-label="Send comment" disabled={!commentDrafts[post.id]?.trim() || busyCommentPost === post.id}>{busyCommentPost === post.id ? 'Sending…' : <Send size={16} />}</button></form>
             </div>
-          </article>)}</div>{feedHasMore && <button className="load-feed-button" type="button" onClick={loadMoreFeedPosts} disabled={feedMoreBusy}>{feedMoreBusy ? 'Loading…' : 'Load more posts'}</button>}</> : <div className="posts-empty feed-empty"><span className="empty-camera"><Camera size={21} /></span><strong>No member posts yet</strong><p>When members share photos, they’ll appear here.</p></div>}
+          </article>)}</div>{feedHasMore && <div ref={feedScrollSentinelRef} className="feed-scroll-sentinel" aria-hidden="true">{feedMoreBusy ? 'Loading posts…' : ''}</div>}</> : <div className="posts-empty feed-empty"><span className="empty-camera"><Camera size={21} /></span><strong>No member posts yet</strong><p>When members share photos, they’ll appear here.</p></div>}
         </section> : profileTab === 'member-profile' ? <section className="public-member-content">
           <button className="back-to-feed" onClick={() => setProfileTab('feed')}><ArrowLeft size={15} /> Back to feed</button>
           {viewedProfileBusy ? <ProfileSkeleton /> : viewedProfileError ? <p className="posts-setup-note" role="status">{viewedProfileError}</p> : viewedProfile && <><section className="profile-overview public-profile-overview">{viewedProfile.avatar_url ? <img className="profile-large-avatar" src={viewedProfile.avatar_url} alt="" /> : <div className="profile-large-avatar profile-avatar-empty">{(viewedProfile.full_name || 'M').slice(0, 1).toUpperCase()}</div>}<div className="profile-identity"><div className="profile-name-row"><h1>{viewedProfile.full_name || 'Member'}</h1>{viewedProfile.is_verified && <span className="verified-tick" role="img" aria-label="Verified member" title="Verified member">✓</span>}</div><p>{viewedProfile.description || 'No description added.'}</p><div className="profile-socials">{viewedSocialLinks.map(link => <a key={link.label} href={link.url} target="_blank" rel="noreferrer">{link.label === 'Instagram' ? <Instagram size={14} /> : link.label === 'Facebook' ? <Facebook size={14} /> : <Youtube size={14} />}{link.label}<ArrowUpRight size={12} /></a>)}</div></div></section>
