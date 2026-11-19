@@ -7,7 +7,7 @@ export default function MemberPage({ app }) {
     profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings,
     accountMenuOpen, setAccountMenuOpen, profile, avatarPreview, setAvatarPreview, saveProfile,
     avatarFile, setAvatarFile, profileBusy, setProfile, locationBusy, detectLocation, feedError,
-    feedBusy, feedPosts, feedHasMore, feedMoreBusy, loadMoreFeedPosts, followBusyIds, toggleMemberFollow, openMemberProfile, busyLikePosts, togglePostLike, busyCommentPost,
+    feedBusy, feedPosts, feedHasMore, feedMoreBusy, loadMoreFeedPosts, feedFollowingIds, followBusyIds, toggleMemberFollow, openMemberProfile, busyLikePosts, togglePostLike, busyCommentPost,
     commentDrafts, setCommentDrafts, submitPostComment, loadingCommentPost, loadPostComments, loadAllPostComments, viewedProfileBusy, viewedProfileError,
     viewedProfile, viewedSocialLinks, viewedProfilePosts, viewedFollowStats, profileFollowStats, followListState, openFollowList, closeFollowList, socialLinks, posts, composerOpen,
     notifications, notificationsBusy, notificationsError, openNotification,
