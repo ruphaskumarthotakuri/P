@@ -118,7 +118,6 @@ export default function App() {
   const [feedPosts, setFeedPosts] = useState([])
   const [feedBusy, setFeedBusy] = useState(false)
   const [feedError, setFeedError] = useState('')
-  const [feedRefresh, setFeedRefresh] = useState(0)
   const [feedHasMore, setFeedHasMore] = useState(false)
   const [feedMoreBusy, setFeedMoreBusy] = useState(false)
   const [feedFollowingIds, setFeedFollowingIds] = useState([])
@@ -384,7 +383,7 @@ export default function App() {
       .catch(error => { if (active) setFeedError(`Could not load the feed. ${error.message.includes('follows') ? 'Run supabase/follows-schema.sql in Supabase SQL Editor.' : 'Check your posts schema and server environment.'} (${error.message})`) })
       .finally(() => { if (active) setFeedBusy(false) })
     return () => { active = false }
-  }, [profileTab, user?.id, feedRefresh])
+  }, [profileTab, user?.id])
 
   useEffect(() => {
     if (profileTab !== 'profile' || !user || !supabase) return
@@ -393,7 +392,7 @@ export default function App() {
       .then(stats => { if (active) setProfileFollowStats({ ...stats, userId: user.id }) })
       .catch(() => { if (active) setProfileFollowStats({ followers: 0, following: 0, userId: user.id }) })
     return () => { active = false }
-  }, [profileTab, user?.id, feedRefresh])
+  }, [profileTab, user?.id])
 
   useEffect(() => {
     if (!user || !supabase) return
@@ -460,11 +459,18 @@ export default function App() {
       : viewedFollowStats?.userId === memberId ? viewedFollowStats.isFollowing : feedFollowingIds.includes(memberId)
     try {
       await memberApi(`/api/follows/${memberId}`, { method: currentlyFollowing ? 'DELETE' : 'PUT' })
-      setFeedFollowingIds(current => currentlyFollowing ? current.filter(id => id !== memberId) : [...current, memberId])
+      const nextFollowingIds = currentlyFollowing
+        ? feedFollowingIds.filter(id => id !== memberId)
+        : [...new Set([...feedFollowingIds, memberId])]
+      const nextFollowingSet = new Set(nextFollowingIds)
+      setFeedFollowingIds(nextFollowingIds)
+      setFeedPosts(current => [...current].sort((first, second) => {
+        const followOrder = Number(nextFollowingSet.has(second.user_id)) - Number(nextFollowingSet.has(first.user_id))
+        return followOrder || new Date(second.created_at) - new Date(first.created_at)
+      }))
       setViewedFollowStats(current => current?.userId === memberId ? { ...current, isFollowing: !currentlyFollowing, followers: Math.max(0, (current.followers || 0) + (currentlyFollowing ? -1 : 1)) } : current)
       setProfileFollowStats(current => current ? { ...current, following: Math.max(0, (current.following || 0) + (currentlyFollowing ? -1 : 1)) } : current)
       setFollowListState(current => current ? { ...current, items: current.items.map(item => item.user_id === memberId ? { ...item, isFollowing: !currentlyFollowing } : item) } : current)
-      setFeedRefresh(value => value + 1)
     } catch (error) {
       setProfileNotice({ kind: 'error', text: `Could not update follow. ${error.message}` })
     } finally {
@@ -909,7 +915,6 @@ export default function App() {
       setPostCaption('')
       setPostLocation(null)
       setComposerOpen(false)
-      setFeedRefresh(value => value + 1)
       setProfileNotice({ kind: 'success', text: 'Photo posted to your profile.' })
     } catch (error) {
       setProfileNotice({ kind: 'error', text: error.message || 'Could not upload this photo.' })
