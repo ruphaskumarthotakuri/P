@@ -117,13 +117,13 @@ export default function MemberPage({ app }) {
           <nav className="member-tabs" aria-label="Profile pages">
             {profileComplete && <button className={profileTab === 'feed' || profileTab === 'member-profile' ? 'active' : ''} onClick={() => setProfileTab('feed')}>Feed</button>}
             {profileComplete && <button className={profileTab === 'profile' ? 'active' : ''} onClick={() => setProfileTab('profile')}>My profile</button>}
-            {profileComplete && <button className={`notification-tab ${profileTab === 'notifications' ? 'active' : ''}`} onClick={() => setProfileTab('notifications')}><Bell size={14} /> Notifications{notifications.some(item => !item.read_at) && <span className="notification-count">{notifications.filter(item => !item.read_at).length}</span>}</button>}
+            {profileComplete && <button className={`notification-tab ${profileTab === 'notifications' ? 'active' : ''}`} type="button" aria-label="Notifications" title="Notifications" onClick={() => setProfileTab('notifications')}><Bell size={18} />{notifications.some(item => !item.read_at) && <span className="notification-count">{notifications.filter(item => !item.read_at).length}</span>}</button>}
             <button className={!profileComplete || profileTab === 'settings' ? 'active' : ''} onClick={openProfileSettings}>{profileComplete ? 'Settings' : 'Complete profile'}</button>
             {profileComplete && <button className="header-new-post" onClick={() => { setProfileTab('profile'); setComposerOpen(true); setProfileNotice(null) }}><Plus size={14} /> New post</button>}
           </nav>
           <div className="account-menu-wrap">
             <button className="account-menu-trigger" type="button" aria-label="Account menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen(open => !open)}><UserRound size={19} /></button>
-            {accountMenuOpen && <div className="account-menu"><button type="button" onClick={() => { setProfileTab('profile'); setAccountMenuOpen(false) }}>My profile</button><button type="button" onClick={async () => { setAccountMenuOpen(false); await supabase.auth.signOut(); setUser(null); setProfileTab('profile') }}>Sign out</button></div>}
+            {accountMenuOpen && <div className="account-menu"><button type="button" onClick={async () => { setAccountMenuOpen(false); await supabase.auth.signOut(); setUser(null); setProfileTab('profile') }}>Sign out</button></div>}
           </div>
         </header>
 

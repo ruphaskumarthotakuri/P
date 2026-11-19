@@ -7,9 +7,7 @@ import MemberPage from './pages/MemberPage.jsx'
 import { PageSkeleton } from './components/Skeletons.jsx'
 import AppErrorBoundary from './components/AppErrorBoundary.jsx'
 
-const FEED_PAGE_SIZE = 10
 const COMMENT_PAGE_SIZE = 2
-const POST_FIELDS = 'id, user_id, image_path, caption, location, latitude, longitude, created_at'
 
 function isProfileComplete(profile) {
   const requiredValues = [profile.phone, profile.education, profile.description, profile.location, profile.church_name]
@@ -124,7 +122,6 @@ export default function App() {
   const [feedHasMore, setFeedHasMore] = useState(false)
   const [feedMoreBusy, setFeedMoreBusy] = useState(false)
   const [feedFollowingIds, setFeedFollowingIds] = useState([])
-  const [feedDiscoveryIds, setFeedDiscoveryIds] = useState([])
   const [followBusyIds, setFollowBusyIds] = useState([])
   const [loadingCommentPost, setLoadingCommentPost] = useState('')
   const [busyLikePosts, setBusyLikePosts] = useState([])
@@ -335,24 +332,9 @@ export default function App() {
     return () => { active = false }
   }, [user?.id])
 
-  async function fetchFeedPage(offset, ordering = { followedIds: feedFollowingIds, discoveryIds: feedDiscoveryIds }) {
-    const followedIds = (ordering.followedIds || []).filter(id => id !== user.id).slice(0, 500)
-    const discoveryIds = (ordering.discoveryIds || []).filter(id => id !== user.id && !followedIds.includes(id)).slice(0, 150)
-    const followingQuery = followedIds.length
-      ? supabase.from('posts').select(POST_FIELDS, { count: 'exact' }).in('user_id', followedIds).order('created_at', { ascending: false }).range(offset, offset + FEED_PAGE_SIZE - 1)
-      : Promise.resolve({ data: [], count: 0, error: null })
-    const { data: followedRows, count: followedCount, error: followedError } = await followingQuery
-    if (followedError) throw followedError
-    const followedPosts = followedRows || []
-    const slotsLeft = FEED_PAGE_SIZE - followedPosts.length
-    const discoveryOffset = Math.max(0, offset - (followedCount || 0))
-    const discoveryQuery = slotsLeft > 0 && discoveryIds.length
-      ? supabase.from('posts').select(POST_FIELDS).in('user_id', discoveryIds).order('created_at', { ascending: false }).range(discoveryOffset, discoveryOffset + slotsLeft - 1)
-      : Promise.resolve({ data: [], error: null })
-    const { data: discoveryRows, error: discoveryError } = await discoveryQuery
-    if (discoveryError) throw discoveryError
-    const discoveryPosts = discoveryRows || []
-    const postsPage = [...followedPosts, ...discoveryPosts]
+  async function fetchFeedPage(offset) {
+    const page = await memberApi(`/api/feed/posts?offset=${offset}`)
+    const postsPage = page.posts || []
     const ids = [...new Set(postsPage.map(post => post.user_id))]
     const postIds = postsPage.map(post => post.id)
     const [profilesResult, likesResult] = await Promise.all([
@@ -378,7 +360,9 @@ export default function App() {
         comments_total: null,
         comments_loaded: false,
       })),
-      hasMore: postsPage.length === FEED_PAGE_SIZE,
+      hasMore: Boolean(page.hasMore),
+      followedIds: page.followedIds || [],
+      discoveryIds: page.discoveryIds || [],
     }
   }
 
@@ -389,15 +373,13 @@ export default function App() {
     setFeedHasMore(false)
     setFeedPosts([])
     setFeedError('')
-    memberApi('/api/feed/ordering')
-      .then(ordering => {
-        if (!active) return null
-        setFeedFollowingIds(ordering.followedIds || [])
-        setFeedDiscoveryIds(ordering.discoveryIds || [])
-        return fetchFeedPage(0, ordering)
-      })
+    fetchFeedPage(0)
       .then(result => {
-        if (active && result) { setFeedPosts(result.posts); setFeedHasMore(result.hasMore) }
+        if (active && result) {
+          setFeedFollowingIds(result.followedIds)
+          setFeedPosts(result.posts)
+          setFeedHasMore(result.hasMore)
+        }
       })
       .catch(error => { if (active) setFeedError(`Could not load the feed. ${error.message.includes('follows') ? 'Run supabase/follows-schema.sql in Supabase SQL Editor.' : 'Check your posts schema and server environment.'} (${error.message})`) })
       .finally(() => { if (active) setFeedBusy(false) })
@@ -916,6 +898,11 @@ export default function App() {
         await supabase.storage.from('photo').remove([imagePath]).catch(() => {})
         throw error
       }
+      await memberApi('/api/feed/cache/invalidate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'posts' }),
+      }).catch(() => {})
       const { data: signed } = await supabase.storage.from('photo').createSignedUrl(imagePath, 3600)
       setPosts(current => [{ ...data, image_url: signed?.signedUrl || postPreview }, ...current])
       setPostFile(null)

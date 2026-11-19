@@ -26,6 +26,9 @@ const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_RE
   ? new Redis({ url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN })
   : null
 const followCacheVersionKey = 'northstar:follows:version'
+const memberCacheVersionKey = 'northstar:members:version'
+const postCacheVersionKey = 'northstar:posts:version'
+const feedPageSize = 10
 const adminCookieName = 'northstar_admin'
 const adminSessionDuration = 12 * 60 * 60 * 1000
 const adminLoginFailures = new Map()
@@ -62,77 +65,122 @@ async function getMemberForRequest(req) {
   return error ? null : data.user || null
 }
 
-async function readFollowCacheVersion() {
+async function readCacheVersion(key) {
   if (!redis) return null
-  try { return String((await redis.get(followCacheVersionKey)) || '0') } catch { return null }
+  try { return String((await redis.get(key)) || '0') } catch { return null }
 }
 
-async function invalidateFollowCaches() {
-  if (!redis) return
-  try { await redis.incr(followCacheVersionKey) } catch { /* Database mutations remain successful; cached values expire shortly. */ }
+async function bumpCacheVersion(key) {
+  if (!redis) return false
+  try { await redis.incr(key); return true } catch { /* Supabase stays authoritative; short TTLs limit stale reads. */ return false }
+}
+
+async function invalidateFollowCaches() { await bumpCacheVersion(followCacheVersionKey) }
+
+async function getMemberFeedOrdering(user) {
+  const [followVersion, memberVersion] = await Promise.all([
+    readCacheVersion(followCacheVersionKey),
+    readCacheVersion(memberCacheVersionKey),
+  ])
+  const followsKey = followVersion == null ? null : `northstar:follows:${followVersion}:${user.id}`
+  const discoveryKey = memberVersion == null ? null : `northstar:feed:member-order:${memberVersion}`
+  let followedIds = null
+  let orderedMemberIds = null
+  let hadCachedFollows = false
+  let hadCachedMembers = false
+  if (redis) {
+    const [cachedFollows, cachedMembers] = await Promise.all([
+      followsKey ? redis.get(followsKey).catch(() => null) : Promise.resolve(null),
+      discoveryKey ? redis.get(discoveryKey).catch(() => null) : Promise.resolve(null),
+    ])
+    hadCachedFollows = Array.isArray(cachedFollows)
+    hadCachedMembers = Array.isArray(cachedMembers)
+    followedIds = hadCachedFollows ? cachedFollows : null
+    orderedMemberIds = hadCachedMembers ? cachedMembers : null
+  }
+  const [followRows, memberRows] = await Promise.all([
+    followedIds ? Promise.resolve(null) : adminSupabase.from('follows').select('following_id').eq('follower_id', user.id),
+    orderedMemberIds ? Promise.resolve(null) : adminSupabase.from('profiles').select('user_id').limit(5000),
+  ])
+  if (followRows?.error) throw followRows.error
+  if (memberRows?.error) throw memberRows.error
+  if (!followedIds) followedIds = (followRows?.data || []).map(row => row.following_id)
+  if (!orderedMemberIds) {
+    orderedMemberIds = (memberRows?.data || []).map(row => row.user_id)
+    for (let index = orderedMemberIds.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(Math.random() * (index + 1))
+      ;[orderedMemberIds[index], orderedMemberIds[randomIndex]] = [orderedMemberIds[randomIndex], orderedMemberIds[index]]
+    }
+  }
+  if (redis) await Promise.all([
+    ...(!hadCachedFollows && followsKey ? [redis.set(followsKey, followedIds, { ex: 300 }).catch(() => null)] : []),
+    ...(!hadCachedMembers && discoveryKey ? [redis.set(discoveryKey, orderedMemberIds, { ex: 300 }).catch(() => null)] : []),
+  ])
+  const followedSet = new Set(followedIds)
+  return {
+    followedIds,
+    discoveryIds: orderedMemberIds.filter(id => id !== user.id && !followedSet.has(id)).slice(0, 150),
+    versions: { follows: followVersion, members: memberVersion },
+  }
 }
 
 app.post('/api/feed/cache/invalidate', async (req, res) => {
   try {
     const user = await getMemberForRequest(req)
     if (!user) return res.status(401).json({ error: 'Sign in to update your profile.' })
-    if (redis) { try { await redis.del('northstar:feed:member-order:v1') } catch { /* Cached member order expires after five minutes. */ } }
-    return res.json({ invalidated: true })
+    const scope = req.body?.scope || 'members'
+    if (!['members', 'posts'].includes(scope)) return res.status(400).json({ error: 'Choose a supported cache scope.' })
+    const invalidated = await bumpCacheVersion(scope === 'posts' ? postCacheVersionKey : memberCacheVersionKey)
+    return res.json({ invalidated, scope })
   } catch {
     return res.status(500).json({ error: 'Could not refresh the member cache.' })
   }
 })
 
-app.get('/api/feed/ordering', async (req, res) => {
+app.get('/api/feed/posts', async (req, res) => {
   if (!adminSupabase) return res.status(503).json({ error: 'Supabase server access is not configured.' })
+  const offset = Number(req.query.offset || 0)
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100000) return res.status(400).json({ error: 'Choose a valid feed position.' })
   try {
     const user = await getMemberForRequest(req)
-    if (!user) return res.status(401).json({ error: 'Sign in to load your member feed.' })
-
-    const followCacheVersion = await readFollowCacheVersion()
-    const followsKey = followCacheVersion == null ? null : `northstar:follows:${followCacheVersion}:${user.id}`
-    const discoveryKey = 'northstar:feed:member-order:v1'
-    let followedIds = null
-    let orderedMemberIds = null
-    let hadCachedFollows = false
-    let hadCachedMembers = false
-    if (redis) {
-      const [cachedFollows, cachedMembers] = await Promise.all([
-        followsKey ? redis.get(followsKey).catch(() => null) : Promise.resolve(null),
-        redis.get(discoveryKey).catch(() => null),
-      ])
-      hadCachedFollows = Array.isArray(cachedFollows)
-      hadCachedMembers = Array.isArray(cachedMembers)
-      followedIds = hadCachedFollows ? cachedFollows : null
-      orderedMemberIds = hadCachedMembers ? cachedMembers : null
+    if (!user) return res.status(401).json({ error: 'Sign in to load the member feed.' })
+    const ordering = await getMemberFeedOrdering(user)
+    const [postVersion, followVersion, memberVersion] = [
+      await readCacheVersion(postCacheVersionKey), ordering.versions.follows, ordering.versions.members,
+    ]
+    const canCache = Boolean(redis && postVersion != null && followVersion != null && memberVersion != null)
+    const pageKey = canCache
+      ? `northstar:feed:page:v1:${user.id}:${followVersion}:${memberVersion}:${postVersion}:${offset}`
+      : null
+    if (pageKey) {
+      try {
+        const cached = await redis.get(pageKey)
+        if (cached && Array.isArray(cached.posts)) return res.json({ ...cached, ...ordering, cache: 'hit' })
+      } catch { /* Fetch the authoritative page from Supabase when Redis is unavailable. */ }
     }
-    const [followRows, memberRows] = await Promise.all([
-      followedIds ? Promise.resolve(null) : adminSupabase.from('follows').select('following_id').eq('follower_id', user.id),
-      orderedMemberIds ? Promise.resolve(null) : adminSupabase.from('profiles').select('user_id').limit(5000),
-    ])
-    if (followRows?.error) throw followRows.error
-    if (memberRows?.error) throw memberRows.error
-    if (!followedIds) followedIds = (followRows?.data || []).map(row => row.following_id)
-    if (!orderedMemberIds) {
-      orderedMemberIds = (memberRows?.data || []).map(row => row.user_id)
-      for (let index = orderedMemberIds.length - 1; index > 0; index -= 1) {
-        const randomIndex = Math.floor(Math.random() * (index + 1))
-        ;[orderedMemberIds[index], orderedMemberIds[randomIndex]] = [orderedMemberIds[randomIndex], orderedMemberIds[index]]
-      }
+    const followedIds = ordering.followedIds.filter(id => id !== user.id).slice(0, 500)
+    const discoveryIds = ordering.discoveryIds.filter(id => id !== user.id && !followedIds.includes(id)).slice(0, 150)
+    const followedQuery = followedIds.length
+      ? adminSupabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at', { count: 'exact' }).in('user_id', followedIds).order('created_at', { ascending: false }).range(offset, offset + feedPageSize - 1)
+      : Promise.resolve({ data: [], count: 0, error: null })
+    const { data: followedRows, count: followedCount, error: followedError } = await followedQuery
+    if (followedError) throw followedError
+    const followedPosts = followedRows || []
+    const slotsLeft = feedPageSize - followedPosts.length
+    const discoveryOffset = Math.max(0, offset - (followedCount || 0))
+    const discoveryQuery = slotsLeft > 0 && discoveryIds.length
+      ? adminSupabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at').in('user_id', discoveryIds).order('created_at', { ascending: false }).range(discoveryOffset, discoveryOffset + slotsLeft - 1)
+      : Promise.resolve({ data: [], error: null })
+    const { data: discoveryRows, error: discoveryError } = await discoveryQuery
+    if (discoveryError) throw discoveryError
+    const page = {
+      posts: [...followedPosts, ...(discoveryRows || [])],
+      hasMore: [...followedPosts, ...(discoveryRows || [])].length === feedPageSize,
     }
-    if (redis) await Promise.all([
-      ...(!hadCachedFollows && followsKey ? [redis.set(followsKey, followedIds, { ex: 300 }).catch(() => null)] : []),
-      ...(!hadCachedMembers ? [redis.set(discoveryKey, orderedMemberIds, { ex: 300 }).catch(() => null)] : []),
-    ])
-
-    const followedSet = new Set(followedIds)
-    return res.json({
-      followedIds,
-      discoveryIds: orderedMemberIds.filter(id => id !== user.id && !followedSet.has(id)).slice(0, 150),
-      cache: redis ? 'upstash' : 'disabled',
-    })
+    if (pageKey) { try { await redis.set(pageKey, page, { ex: 45 }) } catch { /* Feed still works without a Redis write. */ } }
+    return res.json({ ...page, ...ordering, cache: pageKey ? 'miss' : 'disabled' })
   } catch (error) {
-    return res.status(503).json({ error: error.message || 'Could not prepare the member feed.' })
+    return res.status(503).json({ error: error.message || 'Could not load the member feed.' })
   }
 })
 
@@ -159,7 +207,7 @@ app.get('/api/follows/:userId', async (req, res) => {
       return res.json({ userIds, viewerFollowingIds: (viewerRows || []).map(row => row.following_id) })
     }
 
-    const followCacheVersion = await readFollowCacheVersion()
+    const followCacheVersion = await readCacheVersion(followCacheVersionKey)
     const statsKey = followCacheVersion == null ? null : `northstar:follow-stats:${followCacheVersion}:${profileId}`
     let stats = null
     if (statsKey) { try { stats = await redis.get(statsKey) } catch { /* Read counts from Supabase when cache is unavailable. */ } }
@@ -694,7 +742,7 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
     }
     const { error } = await adminSupabase.auth.admin.deleteUser(userId)
     if (error) throw error
-    if (redis) { try { await redis.del('northstar:feed:member-order:v1') } catch { /* Cached member order expires after five minutes. */ } }
+    await Promise.all([memberCacheVersionKey, postCacheVersionKey].map(bumpCacheVersion))
     await invalidateFollowCaches()
     return res.json({ deleted: true, removedPhotos: photoPaths.length })
   } catch (error) {

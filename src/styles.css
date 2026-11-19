@@ -584,6 +584,14 @@ form input:focus { border-color: #555; }
   color: #183e32;
   font-weight: 700;
 }
+.member-tabs .notification-tab {
+  position: relative;
+  width: 42px;
+  min-width: 42px;
+  padding: 0;
+}
+.member-tabs .notification-tab.active { background: #eef4ef; color: #183e32; }
+.member-tabs .notification-count { position: absolute; top: 3px; right: 3px; min-width: 15px; height: 15px; font-size: 8px; }
 .member-tabs .header-new-post {
   height: 42px;
   margin-left: 8px;
