@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
-import AdminPage from './pages/AdminPage.jsx'
-import AdminLoginPage from './pages/AdminLoginPage.jsx'
+const AdminPage = lazy(() => import('./pages/AdminPage.jsx'))
+const AdminLoginPage = lazy(() => import('./pages/AdminLoginPage.jsx'))
 import AuthPage from './pages/AuthPage.jsx'
-import MemberPage from './pages/MemberPage.jsx'
+const MemberPage = lazy(() => import('./pages/MemberPage.jsx'))
 import { PageSkeleton } from './components/Skeletons.jsx'
 import AppErrorBoundary from './components/AppErrorBoundary.jsx'
+import { compressImage, uploadImage } from './lib/upload'
 
 const COMMENT_PAGE_SIZE = 2
 
@@ -113,6 +114,12 @@ export default function App() {
   const [profileNotice, setProfileNotice] = useState(null)
   const [profileTab, setProfileTab] = useState('feed')
   const [posts, setPosts] = useState([])
+  const [profilePostsMore, setProfilePostsMore] = useState(false)
+  const [profilePostCount, setProfilePostCount] = useState(0)
+  const [viewedPostCount, setViewedPostCount] = useState(0)
+  const [viewedPostsMore, setViewedPostsMore] = useState(false)
+  const [profileMoreBusy, setProfileMoreBusy] = useState(false)
+  const profilePostsRequestRef = useRef(0)
   const [postsBusy, setPostsBusy] = useState(false)
   const [postsLoadError, setPostsLoadError] = useState('')
   const [feedPosts, setFeedPosts] = useState([])
@@ -123,6 +130,7 @@ export default function App() {
   const [feedFollowingIds, setFeedFollowingIds] = useState([])
   const [followBusyIds, setFollowBusyIds] = useState([])
   const [loadingCommentPost, setLoadingCommentPost] = useState('')
+  const pendingCommentLoads = useRef(new Set())
   const [busyLikePosts, setBusyLikePosts] = useState([])
   const [commentDrafts, setCommentDrafts] = useState({})
   const [busyCommentPost, setBusyCommentPost] = useState('')
@@ -143,8 +151,11 @@ export default function App() {
   const [postLocation, setPostLocation] = useState(null)
   const [postLocationBusy, setPostLocationBusy] = useState(false)
   const [postBusy, setPostBusy] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadStage, setUploadStage] = useState('')
+  const [notificationPost, setNotificationPost] = useState(null)
+  const uploadAttemptRef = useRef(null)
   const [composerOpen, setComposerOpen] = useState(false)
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [adminView, setAdminView] = useState(false)
   const [adminAuthenticated, setAdminAuthenticated] = useState(false)
   const [adminEmail, setAdminEmail] = useState('admin')
@@ -304,11 +315,13 @@ export default function App() {
     let active = true
     setPostsBusy(true)
     setPostsLoadError('')
-    supabase.from('posts').select('id, image_path, caption, location, latitude, longitude, created_at')
-      .eq('user_id', user.id).order('created_at', { ascending: false })
-      .then(async ({ data, error }) => {
+    supabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at', { count: 'exact' })
+      .eq('user_id', user.id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(13)
+      .then(async ({ data, count, error }) => {
         if (error) throw error
-        const rows = data || []
+        if (active) setProfilePostCount(count || 0)
+        const rows = (data || []).slice(0, 12)
+        if (active) setProfilePostsMore((data || []).length > 12)
         const { data: signed } = rows.length
           ? await supabase.storage.from('photo').createSignedUrls(rows.map(post => post.image_path), 3600)
           : { data: [] }
@@ -333,36 +346,7 @@ export default function App() {
 
   async function fetchFeedPage(offset) {
     const page = await memberApi(`/api/feed/posts?offset=${offset}`)
-    const postsPage = page.posts || []
-    const ids = [...new Set(postsPage.map(post => post.user_id))]
-    const postIds = postsPage.map(post => post.id)
-    const [profilesResult, likesResult] = await Promise.all([
-      ids.length
-        ? supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').in('user_id', ids)
-        : Promise.resolve({ data: [], error: null }),
-      postIds.length ? supabase.from('post_likes').select('post_id, user_id').in('post_id', postIds) : Promise.resolve({ data: [], error: null }),
-    ])
-    if (profilesResult.error) throw profilesResult.error
-    if (likesResult.error) throw likesResult.error
-    const [result, verifiedUsers] = await Promise.all([
-      addSignedPhotoUrls(supabase, postsPage, profilesResult.data || []),
-      fetchVerifiedUsers(ids),
-    ])
-    const likeRows = likesResult.data || []
-    return {
-      posts: result.posts.map(post => ({
-        ...post,
-        author: post.author ? { ...post.author, is_verified: Boolean(verifiedUsers[post.user_id]) } : null,
-        like_count: (likeRows || []).filter(like => like.post_id === post.id).length,
-        liked_by_me: (likeRows || []).some(like => like.post_id === post.id && like.user_id === user.id),
-        comments: [],
-        comments_total: null,
-        comments_loaded: false,
-      })),
-      hasMore: Boolean(page.hasMore),
-      followedIds: page.followedIds || [],
-      discoveryIds: page.discoveryIds || [],
-    }
+    return { posts: page.posts || [], hasMore: Boolean(page.hasMore), followedIds: page.followedIds || [] }
   }
 
   useEffect(() => {
@@ -433,8 +417,69 @@ export default function App() {
       const { error } = await supabase.from('notifications').update({ read_at: readAt }).eq('id', item.id).eq('recipient_id', user.id)
       if (!error) setNotifications(current => current.map(notification => notification.id === item.id ? { ...notification, read_at: readAt } : notification))
     }
-    if (item.actor_id && item.kind !== 'new_member') await openMemberProfile(item.actor_id)
-    else if (item.actor_id) await openMemberProfile(item.actor_id)
+    if (item.post_id) {
+      try {
+        const { data, error } = await supabase.from('posts').select('*').eq('id', item.post_id).single()
+        if (error) throw error
+        const result = await addSignedPhotoUrls(supabase, [data])
+        setNotificationPost(result.posts[0])
+      } catch { setProfileNotice({ kind: 'error', text: 'This post is no longer available.' }) }
+    } else if (item.actor_id) await openMemberProfile(item.actor_id)
+  }
+
+  async function markAllNotificationsRead() {
+    const readAt = new Date().toISOString()
+    const { error } = await supabase.from('notifications').update({ read_at: readAt }).eq('recipient_id', user.id).is('read_at', null)
+    if (error) return setProfileNotice({ kind: 'error', text: error.message })
+    setNotifications(current => current.map(item => ({ ...item, read_at: item.read_at || readAt })))
+  }
+
+  async function editContent(item, kind, value) {
+    const field = kind === 'post' ? 'caption' : 'content'
+    const { data, error } = await supabase.from(kind === 'post' ? 'posts' : 'post_comments')
+      .update({ [field]: value.trim() }).eq('id', item.id).eq('user_id', user.id).select('id').single()
+    if (error || !data) throw error || new Error('This item could not be updated.')
+    if (kind === 'post') {
+      for (const update of [setPosts, setViewedProfilePosts, setFeedPosts]) update(rows => rows.map(row => row.id === item.id ? { ...row, caption: value.trim() } : row))
+      await memberApi('/api/feed/cache/invalidate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: 'posts' }) })
+    } else setFeedPosts(rows => rows.map(row => ({ ...row, comments: row.comments.map(comment => comment.id === item.id ? { ...comment, content: value.trim() } : comment) })))
+  }
+
+  async function deleteContent(item, kind) {
+    const { data, error } = await supabase.from(kind === 'post' ? 'posts' : 'post_comments')
+      .delete().eq('id', item.id).eq('user_id', user.id).select('id').single()
+    if (error || !data) throw error || new Error('This item could not be deleted.')
+    if (kind === 'post') {
+      for (const update of [setPosts, setViewedProfilePosts, setFeedPosts]) update(rows => rows.filter(row => row.id !== item.id))
+      setProfilePostCount(count => Math.max(0, count - 1))
+      if (viewedProfile?.user_id === user.id) setViewedPostCount(count => Math.max(0, count - 1))
+      const removed = await supabase.storage.from('photo').remove([item.image_path, item.thumbnail_path].filter(Boolean))
+      await memberApi('/api/feed/cache/invalidate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: 'posts' }) }).catch(() => {})
+      if (removed.error) throw new Error('Post deleted, but photo cleanup failed. ' + removed.error.message)
+    } else setFeedPosts(rows => rows.map(row => row.id === item.post_id ? {
+      ...row, comments: row.comments.filter(comment => comment.id !== item.id),
+      comments_total: Math.max(0, (row.comments_total || 0) - 1),
+    } : row))
+  }
+
+  async function blockMember(memberId) {
+    if (!window.confirm('Block this member? You will no longer see each other’s profiles and posts.')) return
+    try {
+      await memberApi(`/api/members/${memberId}/block`, { method: 'PUT' })
+      setFeedPosts(rows => rows.filter(row => row.user_id !== memberId))
+      setFeedFollowingIds(ids => ids.filter(id => id !== memberId))
+      setProfileTab('feed')
+      setProfileNotice({ kind: 'success', text: 'Member blocked. Manage blocked members in Settings.' })
+    } catch (error) { setProfileNotice({ kind: 'error', text: error.message }) }
+  }
+
+  async function reportMember(memberId) {
+    const reason = window.prompt('Why are you reporting this member?')
+    if (!reason) return
+    try {
+      await memberApi(`/api/members/${memberId}/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) })
+      setProfileNotice({ kind: 'success', text: 'Report sent to the admin for review.' })
+    } catch (error) { setProfileNotice({ kind: 'error', text: error.message }) }
   }
 
   async function loadMoreFeedPosts() {
@@ -492,7 +537,7 @@ export default function App() {
       const { profiles } = await addSignedPhotoUrls(supabase, [], data || [])
       const byId = new Map(profiles.map(item => [item.user_id, item]))
       const items = ids.map(id => ({ ...byId.get(id), user_id: id, isFollowing: (result.viewerFollowingIds || []).includes(id) }))
-      if (requestId === followListRequestRef.current) setFollowListState({ profileId, listType, title, items, busy: false, error: '' })
+      if (requestId === followListRequestRef.current) setFollowListState({ profileId, listType, title, items, nextCursor: result.nextCursor, busy: false, error: '' })
     } catch (error) {
       if (requestId === followListRequestRef.current) setFollowListState({ profileId, listType, title, items: [], busy: false, error: error.message || 'Could not load this list.' })
     }
@@ -503,17 +548,46 @@ export default function App() {
     setFollowListState(null)
   }
 
+  async function loadMoreFollowList() {
+    if (!followListState?.nextCursor || followListState.busy) return
+    const requestId = followListRequestRef.current
+    const { profileId, listType, nextCursor } = followListState
+    setFollowListState(current => ({ ...current, busy: true }))
+    try {
+      const result = await memberApi(`/api/follows/${profileId}?list=${listType}&cursor=${encodeURIComponent(JSON.stringify(nextCursor))}`)
+      const { data, error } = result.userIds.length
+        ? await supabase.from('profiles').select('user_id, full_name, location, avatar_path').in('user_id', result.userIds)
+        : { data: [], error: null }
+      if (error) throw error
+      const { profiles } = await addSignedPhotoUrls(supabase, [], data)
+      const byId = new Map(profiles.map(profile => [profile.user_id, profile]))
+      if (requestId === followListRequestRef.current) setFollowListState(current => ({
+        ...current, busy: false, nextCursor: result.nextCursor,
+        items: [...current.items, ...result.userIds.filter(id => !current.items.some(item => item.user_id === id))
+          .map(id => ({ ...byId.get(id), user_id: id, isFollowing: result.viewerFollowingIds.includes(id) }))],
+      }))
+    } catch (error) {
+      if (requestId === followListRequestRef.current) setFollowListState(current => ({ ...current, busy: false, error: error.message, nextCursor: null }))
+    }
+  }
+
   async function loadPostComments(post, loadAll = false) {
-    if (!supabase || loadingCommentPost === post.id) return
+    if (!supabase || pendingCommentLoads.current.has(post.id)) return
+    pendingCommentLoads.current.add(post.id)
     const offset = post.comments_loaded ? post.comments.length : 0
-    const batchSize = loadAll ? Math.max(0, (post.comments_total || 0) - offset) : COMMENT_PAGE_SIZE
+    const batchSize = loadAll ? Math.min(100, Math.max(1, (post.comments_total || 0) - offset)) : COMMENT_PAGE_SIZE
     setLoadingCommentPost(post.id)
     try {
-      const { data, count, error } = await supabase.from('post_comments')
+      const countResult = await supabase.from('post_comments').select('id', { count: 'exact', head: true }).eq('post_id', post.id)
+      if (countResult.error) throw countResult.error
+      let query = supabase.from('post_comments')
         .select('id, post_id, user_id, content, created_at', { count: 'exact' })
         .eq('post_id', post.id)
         .order('created_at', { ascending: false })
-        .range(offset, offset + batchSize - 1)
+        .order('id', { ascending: false }).limit(batchSize)
+      const oldest = post.comments?.[post.comments.length - 1]
+      if (oldest) query = query.or(`created_at.lt.${oldest.created_at},and(created_at.eq.${oldest.created_at},id.lt.${oldest.id})`)
+      const { data, error } = await query
       if (error) throw error
       const commentUserIds = [...new Set((data || []).map(comment => comment.user_id))]
       const { data: commentProfiles, error: profilesError } = commentUserIds.length
@@ -524,14 +598,15 @@ export default function App() {
       const comments = (data || []).map(comment => ({ ...comment, author_name: namesByUser.get(comment.user_id) || 'Member' }))
       setFeedPosts(current => current.map(item => item.id === post.id ? {
         ...item,
-        comments: offset ? [...item.comments, ...comments] : comments,
-        comments_total: count ?? comments.length,
+        comments: offset ? [...item.comments, ...comments.filter(comment => !item.comments.some(existing => existing.id === comment.id))] : comments,
+        comments_total: countResult.count ?? comments.length,
         comments_loaded: true,
       } : item))
     } catch (error) {
       setProfileNotice({ kind: 'error', text: `Could not load comments. (${error.message})` })
     } finally {
-      setLoadingCommentPost('')
+      pendingCommentLoads.current.delete(post.id)
+      setLoadingCommentPost(current => current === post.id ? '' : current)
     }
   }
 
@@ -564,29 +639,58 @@ export default function App() {
   }, [avatarFile, profile.avatar_path, profile.avatar_url])
 
   async function openMemberProfile(userId) {
+    const requestId = ++profilePostsRequestRef.current
+    setProfileTab('member-profile')
     setViewedProfileBusy(true)
     setViewedProfileError('')
     setViewedProfile(null)
     setViewedProfilePosts([])
     try {
-      const [{ data: profileRow, error: profileError }, { data: postRows, error: postsError }, followStats] = await Promise.all([
+      const [{ data: profileRow, error: profileError }, { data: postRows, count: postCount, error: postsError }, followStats] = await Promise.all([
         supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').eq('user_id', userId).single(),
-        supabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at').eq('user_id', userId).order('created_at', { ascending: false }),
+        supabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(13),
         memberApi(`/api/follows/${userId}`),
       ])
       if (profileError) throw profileError
       if (postsError) throw postsError
-      const result = await addSignedPhotoUrls(supabase, postRows || [], [profileRow])
+      const result = await addSignedPhotoUrls(supabase, (postRows || []).slice(0, 12), [profileRow])
       const verifiedUsers = await fetchVerifiedUsers([userId])
+      if (requestId !== profilePostsRequestRef.current) return
+      setViewedPostsMore((postRows || []).length > 12)
+      setViewedPostCount(postCount || 0)
       setViewedProfile({ ...result.profiles[0], is_verified: Boolean(verifiedUsers[userId]) })
       setViewedProfilePosts(result.posts)
       setViewedFollowStats({ ...followStats, userId })
-      setProfileTab('member-profile')
     } catch (error) {
-      setViewedProfileError(`Could not open this profile. Run supabase/posts-schema.sql in Supabase SQL Editor. (${error.message})`)
+      if (requestId === profilePostsRequestRef.current) setViewedProfileError(`This profile is unavailable. ${error.message}`)
     } finally {
-      setViewedProfileBusy(false)
+      if (requestId === profilePostsRequestRef.current) setViewedProfileBusy(false)
     }
+  }
+
+  async function loadMoreProfilePosts() {
+    if (profileMoreBusy) return
+    const viewingOther = profileTab === 'member-profile'
+    const owner = viewingOther ? viewedProfile?.user_id : user.id
+    const rows = viewingOther ? viewedProfilePosts : posts
+    const last = rows[rows.length - 1]
+    if (!owner || !last) return
+    const requestId = profilePostsRequestRef.current
+    setProfileMoreBusy(true)
+    try {
+      const { data, error } = await supabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, created_at')
+        .eq('user_id', owner).or('created_at.lt.' + last.created_at + ',and(created_at.eq.' + last.created_at + ',id.lt.' + last.id + ')')
+        .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(13)
+      if (error) throw error
+      const result = await addSignedPhotoUrls(supabase, data.slice(0, 12))
+      if (viewingOther && requestId !== profilePostsRequestRef.current) return
+      const update = viewingOther ? setViewedProfilePosts : setPosts
+      update(current => [...current, ...result.posts.filter(post => !current.some(item => item.id === post.id))])
+      ;(viewingOther ? setViewedPostsMore : setProfilePostsMore)(data.length > 12)
+    } catch (error) {
+      setProfileNotice({ kind: 'error', text: error.message })
+      ;(viewingOther ? setViewedPostsMore : setProfilePostsMore)(false)
+    } finally { setProfileMoreBusy(false) }
   }
 
   async function fetchVerifiedUsers(userIds) {
@@ -748,11 +852,12 @@ export default function App() {
       if (!phoneResponse.ok) throw new Error(phoneValidation.error || 'Could not validate this phone number.')
       let avatarPath = profile.avatar_path
       if (avatarFile) {
-        const extension = avatarFile.name.split('.').pop()?.toLowerCase() || 'jpg'
+        const avatarImage = await compressImage(avatarFile, 512)
+        const extension = avatarImage.name.split('.').pop()?.toLowerCase() || 'jpg'
         const filePath = `${user.id}/profile.${extension}`
-        const { error: uploadError } = await supabase.storage.from('photo').upload(filePath, avatarFile, {
+        const { error: uploadError } = await supabase.storage.from('photo').upload(filePath, avatarImage, {
           upsert: true,
-          contentType: avatarFile.type || 'image/jpeg',
+          contentType: avatarImage.type || 'image/jpeg',
         })
         if (uploadError) throw uploadError
         avatarPath = filePath
@@ -872,7 +977,7 @@ export default function App() {
 
   async function publishPost(event) {
     event.preventDefault()
-    if (!supabase || !user) return
+    if (!supabase || !user || postBusy) return
     if (!postFile) {
       setProfileNotice({ kind: 'error', text: 'Choose or capture a photo first.' })
       return
@@ -886,23 +991,47 @@ export default function App() {
       return
     }
     setPostBusy(true)
+    setUploadProgress(0)
+    setUploadStage('Compressing image…')
     setProfileNotice(null)
-    const extension = postFile.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
-    const imagePath = `${user.id}/posts/${crypto.randomUUID()}.${extension}`
+    let imagePath = ''
     try {
-      const { error: uploadError } = await supabase.storage.from('photo').upload(imagePath, postFile, { contentType: postFile.type })
-      if (uploadError) throw uploadError
-      const { data, error } = await supabase.from('posts').insert({
+      if (postFile.size > 20 * 1024 * 1024) throw new Error('Choose an image smaller than 20 MB.')
+      const image = await compressImage(postFile)
+      const extension = image.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+      if (uploadAttemptRef.current?.file !== postFile) {
+        const id = crypto.randomUUID()
+        uploadAttemptRef.current = { file: postFile, id, path: `${user.id}/posts/${id}.${extension}`, thumbnailPath: `${user.id}/posts/${id}-thumb.webp` }
+      }
+      imagePath = uploadAttemptRef.current.path
+      setUploadStage('Uploading photo…')
+      await uploadImage(imagePath, image, setUploadProgress)
+      const thumbnail = await compressImage(postFile, 720)
+      // Preserve an animated/unsupported original when canvas conversion is unavailable.
+      const thumbnailPath = thumbnail.type === 'image/webp' ? uploadAttemptRef.current.thumbnailPath : ''
+      if (thumbnailPath) {
+        setUploadStage('Uploading thumbnail…')
+        await uploadImage(thumbnailPath, thumbnail, () => {})
+      }
+      setUploadStage('Saving post…')
+      let { data, error } = await supabase.from('posts').insert({
+        id: uploadAttemptRef.current.id,
         user_id: user.id,
         image_path: imagePath,
+        thumbnail_path: thumbnailPath,
         caption: postCaption.trim(),
         location: postLocation.location,
         latitude: postLocation.latitude,
         longitude: postLocation.longitude,
-      }).select('id, image_path, caption, location, latitude, longitude, created_at').single()
+      }).select('id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at').single()
       if (error) {
-        await supabase.storage.from('photo').remove([imagePath]).catch(() => {})
-        throw error
+        const existing = await supabase.from('posts').select('id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at')
+          .eq('id', uploadAttemptRef.current.id).eq('user_id', user.id).maybeSingle()
+        if (existing.data) data = existing.data
+        else {
+          if (!existing.error) await supabase.storage.from('photo').remove([imagePath, thumbnailPath].filter(Boolean))
+          throw error
+        }
       }
       await memberApi('/api/feed/cache/invalidate', {
         method: 'POST',
@@ -910,7 +1039,9 @@ export default function App() {
         body: JSON.stringify({ scope: 'posts' }),
       }).catch(() => {})
       const { data: signed } = await supabase.storage.from('photo').createSignedUrl(imagePath, 3600)
-      setPosts(current => [{ ...data, image_url: signed?.signedUrl || postPreview }, ...current])
+      setPosts(current => [{ ...data, image_url: signed?.signedUrl || postPreview }, ...current.filter(post => post.id !== data.id)])
+      setProfilePostCount(count => count + 1)
+      uploadAttemptRef.current = null
       setPostFile(null)
       setPostCaption('')
       setPostLocation(null)
@@ -920,6 +1051,7 @@ export default function App() {
       setProfileNotice({ kind: 'error', text: error.message || 'Could not upload this photo.' })
     } finally {
       setPostBusy(false)
+      setUploadStage('')
     }
   }
 
@@ -1061,6 +1193,9 @@ export default function App() {
   }
 
   const pageProps = {
+    profilePostsMore, viewedPostsMore, profileMoreBusy, loadMoreProfilePosts, loadMoreFollowList, profilePostCount, viewedPostCount,
+    memberApi, editContent, deleteContent, blockMember, reportMember, markAllNotificationsRead,
+    notificationPost, setNotificationPost, uploadProgress, uploadStage,
     mode, isSignup, setMode, email, setEmail, password, setPassword, name, setName, signupPhone, setSignupPhone,
     busy, notice, setNotice, handleSubmit, sendPasswordReset, isSupabaseConfigured, setAdminView, adminView,
     adminEmail, setAdminEmail, adminPassword, setAdminPassword, adminBusy, adminNotice, setAdminNotice, handleAdminLogin,
@@ -1069,8 +1204,8 @@ export default function App() {
     selectedMemberIds, setSelectedMemberIds, selectedVerifiedUsers, verifiedUsers,
     setAdminMessage, adminMessageBusy, adminMessageNotice, setAdminMessageNotice, sendWhatsAppMessage,
     whatsappAdminStatus, whatsappStatusError, whatsappDisplayTitle, whatsappDisplayMessage, whatsappUnlinkBusy, unlinkWhatsApp, bulkMessageResults, setBulkMessageResults,
-    profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings, accountMenuOpen,
-    setAccountMenuOpen, profile, avatarPreview, setAvatarPreview, saveProfile, avatarFile, setAvatarFile,
+    profileNotice, user, profileComplete, profileTab, setProfileTab, openProfileSettings,
+    profile, avatarPreview, setAvatarPreview, saveProfile, avatarFile, setAvatarFile,
     profileBusy, locationBusy, detectLocation, setProfile, feedError, feedBusy, feedPosts, feedHasMore, feedMoreBusy, loadMoreFeedPosts, feedFollowingIds, followBusyIds, toggleMemberFollow, openMemberProfile,
     notifications, notificationsBusy, notificationsError, openNotification,
     busyLikePosts, togglePostLike, busyCommentPost, commentDrafts, setCommentDrafts, submitPostComment, loadingCommentPost, loadPostComments, loadAllPostComments: post => loadPostComments(post, true),
@@ -1081,8 +1216,8 @@ export default function App() {
   }
   
   if (checkingSession) return <PageSkeleton />
-  if (adminAuthenticated) return <AdminPage app={pageProps} />
-  if (adminView) return <AdminLoginPage app={pageProps} />
-  if (user) return <AppErrorBoundary><MemberPage app={pageProps} /></AppErrorBoundary>
+  if (adminAuthenticated) return <Suspense fallback={<PageSkeleton />}><AdminPage app={pageProps} /></Suspense>
+  if (adminView) return <Suspense fallback={<PageSkeleton />}><AdminLoginPage app={pageProps} /></Suspense>
+  if (user) return <AppErrorBoundary><Suspense fallback={<PageSkeleton />}><MemberPage app={pageProps} /></Suspense></AppErrorBoundary>
   return <AuthPage app={pageProps} />
 }

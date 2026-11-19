@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import { Redis } from '@upstash/redis'
-import ExcelJS from 'exceljs'
+import { registerMemberFeatures } from './member-features.js'
 import { normalizeWhatsAppNumber, sendWhatsAppText, startWhatsApp, unlinkWhatsApp, whatsappAdminStatus, whatsappStatus } from './whatsapp.js'
 
 const app = express()
@@ -75,13 +75,46 @@ async function bumpCacheVersion(key) {
   try { await redis.incr(key); return true } catch { /* Supabase stays authoritative; short TTLs limit stale reads. */ return false }
 }
 
-async function invalidateFollowCaches() { await bumpCacheVersion(followCacheVersionKey) }
+const memberFollowVersionKey = id => `northstar:member:${id}:follows:version`
+const memberStatsVersionKey = id => `northstar:member:${id}:stats:version`
+async function invalidateMemberFollowCaches(firstId, secondId) {
+  await Promise.all([
+    memberFollowVersionKey(firstId), memberFollowVersionKey(secondId),
+    memberStatsVersionKey(firstId), memberStatsVersionKey(secondId),
+  ].map(bumpCacheVersion))
+}
+
+async function enrichFeedPage(page, userId) {
+  const ids = page.posts.map(post => post.id)
+  if (!ids.length) return page
+  const { data, error } = await adminSupabase.rpc('feed_post_details', { post_ids: ids, viewer_id: userId })
+  if (error) throw error
+  const details = new Map(data.map(item => [item.id, item]))
+  const visible = page.posts.filter(post => details.has(post.id))
+  const paths = [...new Set(visible.flatMap(post => [
+    post.thumbnail_path || post.image_path, details.get(post.id).author.avatar_path,
+  ]).filter(Boolean))]
+  const signed = paths.length ? await adminSupabase.storage.from('photo').createSignedUrls(paths, 3600) : { data: [] }
+  if (signed.error) throw signed.error
+  const urls = new Map(signed.data.map(item => [item.path, item.signedUrl || '']))
+  return { ...page, posts: visible.map(post => {
+    const detail = details.get(post.id)
+    return { ...post, ...detail, image_url: urls.get(post.thumbnail_path || post.image_path) || '',
+      comments_loaded: true, author: { ...detail.author, avatar_url: urls.get(detail.author.avatar_path) || '' } }
+  }) }
+}
 
 async function getMemberFeedOrdering(user) {
-  const [followVersion, memberVersion] = await Promise.all([
-    readCacheVersion(followCacheVersionKey),
+  const { data: blocks, error: blockError } = await adminSupabase.from('member_blocks').select('blocker_id, blocked_id')
+    .or(`blocker_id.eq.${user.id},blocked_id.eq.${user.id}`)
+  if (blockError) throw blockError
+  const blockedIds = new Set((blocks || []).map(row => row.blocker_id === user.id ? row.blocked_id : row.blocker_id))
+  const [localFollowVersion, memberVersion, globalFollowVersion] = await Promise.all([
+    readCacheVersion(memberFollowVersionKey(user.id)),
     readCacheVersion(memberCacheVersionKey),
+    readCacheVersion(followCacheVersionKey),
   ])
+  const followVersion = localFollowVersion == null || globalFollowVersion == null ? null : `${globalFollowVersion}:${localFollowVersion}`
   const followsKey = followVersion == null ? null : `northstar:follows:${followVersion}:${user.id}`
   const discoveryKey = memberVersion == null ? null : `northstar:feed:member-order:${memberVersion}`
   let followedIds = null
@@ -118,8 +151,8 @@ async function getMemberFeedOrdering(user) {
   ])
   const followedSet = new Set(followedIds)
   return {
-    followedIds,
-    discoveryIds: orderedMemberIds.filter(id => id !== user.id && !followedSet.has(id)).slice(0, 150),
+    followedIds: followedIds.filter(id => !blockedIds.has(id)),
+    discoveryIds: orderedMemberIds.filter(id => id !== user.id && !followedSet.has(id) && !blockedIds.has(id)).slice(0, 150),
     versions: { follows: followVersion, members: memberVersion },
   }
 }
@@ -155,13 +188,13 @@ app.get('/api/feed/posts', async (req, res) => {
     if (pageKey) {
       try {
         const cached = await redis.get(pageKey)
-        if (cached && Array.isArray(cached.posts)) return res.json({ ...cached, ...ordering, cache: 'hit' })
+        if (cached && Array.isArray(cached.posts)) return res.json({ ...await enrichFeedPage(cached, user.id), ...ordering, cache: 'hit' })
       } catch { /* Fetch the authoritative page from Supabase when Redis is unavailable. */ }
     }
     const followedIds = ordering.followedIds.filter(id => id !== user.id).slice(0, 500)
     const discoveryIds = ordering.discoveryIds.filter(id => id !== user.id && !followedIds.includes(id)).slice(0, 150)
     const followedQuery = followedIds.length
-      ? adminSupabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at', { count: 'exact' }).in('user_id', followedIds).order('created_at', { ascending: false }).range(offset, offset + feedPageSize - 1)
+      ? adminSupabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at', { count: 'exact' }).in('user_id', followedIds).order('created_at', { ascending: false }).order('id', { ascending: false }).range(offset, offset + feedPageSize - 1)
       : Promise.resolve({ data: [], count: 0, error: null })
     const { data: followedRows, count: followedCount, error: followedError } = await followedQuery
     if (followedError) throw followedError
@@ -169,7 +202,7 @@ app.get('/api/feed/posts', async (req, res) => {
     const slotsLeft = feedPageSize - followedPosts.length
     const discoveryOffset = Math.max(0, offset - (followedCount || 0))
     const discoveryQuery = slotsLeft > 0 && discoveryIds.length
-      ? adminSupabase.from('posts').select('id, user_id, image_path, caption, location, latitude, longitude, created_at').in('user_id', discoveryIds).order('created_at', { ascending: false }).range(discoveryOffset, discoveryOffset + slotsLeft - 1)
+      ? adminSupabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at').in('user_id', discoveryIds).order('created_at', { ascending: false }).order('id', { ascending: false }).range(discoveryOffset, discoveryOffset + slotsLeft - 1)
       : Promise.resolve({ data: [], error: null })
     const { data: discoveryRows, error: discoveryError } = await discoveryQuery
     if (discoveryError) throw discoveryError
@@ -178,7 +211,7 @@ app.get('/api/feed/posts', async (req, res) => {
       hasMore: [...followedPosts, ...(discoveryRows || [])].length === feedPageSize,
     }
     if (pageKey) { try { await redis.set(pageKey, page, { ex: 45 }) } catch { /* Feed still works without a Redis write. */ } }
-    return res.json({ ...page, ...ordering, cache: pageKey ? 'miss' : 'disabled' })
+    return res.json({ ...await enrichFeedPage(page, user.id), ...ordering, cache: pageKey ? 'miss' : 'disabled' })
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not load the member feed.' })
   }
@@ -192,22 +225,41 @@ app.get('/api/follows/:userId', async (req, res) => {
     const profileId = String(req.params.userId || '')
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     if (!uuidPattern.test(profileId)) return res.status(400).json({ error: 'Choose a valid member profile.' })
+    const { data: blocked, error: blockedError } = await adminSupabase.rpc('members_blocked', { first_id: user.id, second_id: profileId })
+    if (blockedError) throw blockedError
+    if (blocked) return res.status(403).json({ error: 'This profile is unavailable.' })
 
     const listType = String(req.query.list || '')
     if (listType === 'followers' || listType === 'following') {
       const column = listType === 'followers' ? 'follower_id' : 'following_id'
       const ownerColumn = listType === 'followers' ? 'following_id' : 'follower_id'
-      const { data, error } = await adminSupabase.from('follows').select(`${column}, created_at`).eq(ownerColumn, profileId).order('created_at', { ascending: false }).limit(500)
+      const cursor = req.query.cursor ? JSON.parse(String(req.query.cursor)) : null
+      if (cursor && (!uuidPattern.test(cursor.id) || !/^\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|\+00:00)$/.test(cursor.time))) {
+        return res.status(400).json({ error: 'Invalid member list cursor.' })
+      }
+      const { data: blocks, error: blocksError } = await adminSupabase.from('member_blocks').select('blocker_id, blocked_id')
+        .or(`blocker_id.eq.${user.id},blocked_id.eq.${user.id}`)
+      if (blocksError) throw blocksError
+      const excluded = blocks.map(row => row.blocker_id === user.id ? row.blocked_id : row.blocker_id)
+      let query = adminSupabase.from('follows').select(`${column}, created_at`).eq(ownerColumn, profileId)
+        .order('created_at', { ascending: false }).order(column, { ascending: false }).limit(31)
+      if (excluded.length) query = query.not(column, 'in', `(${excluded.join(',')})`)
+      if (cursor) query = query.or(`created_at.lt.${cursor.time},and(created_at.eq.${cursor.time},${column}.lt.${cursor.id})`)
+      const { data: rows, error } = await query
       if (error) throw error
-      const userIds = (data || []).map(row => row[column])
+      const data = rows.slice(0, 30)
+      const userIds = data.map(row => row[column])
       const { data: viewerRows, error: viewerError } = userIds.length
         ? await adminSupabase.from('follows').select('following_id').eq('follower_id', user.id).in('following_id', userIds)
         : { data: [], error: null }
       if (viewerError) throw viewerError
-      return res.json({ userIds, viewerFollowingIds: (viewerRows || []).map(row => row.following_id) })
+      const last = data[data.length - 1]
+      return res.json({ userIds, viewerFollowingIds: (viewerRows || []).map(row => row.following_id),
+        nextCursor: rows.length > 30 ? { id: last[column], time: last.created_at } : null })
     }
 
-    const followCacheVersion = await readCacheVersion(followCacheVersionKey)
+    const [globalVersion, localVersion] = await Promise.all([readCacheVersion(followCacheVersionKey), readCacheVersion(memberStatsVersionKey(profileId))])
+    const followCacheVersion = globalVersion == null || localVersion == null ? null : `${globalVersion}:${localVersion}`
     const statsKey = followCacheVersion == null ? null : `northstar:follow-stats:${followCacheVersion}:${profileId}`
     let stats = null
     if (statsKey) { try { stats = await redis.get(statsKey) } catch { /* Read counts from Supabase when cache is unavailable. */ } }
@@ -240,9 +292,12 @@ app.put('/api/follows/:userId', async (req, res) => {
     const { data: target, error: targetError } = await adminSupabase.from('profiles').select('user_id').eq('user_id', followingId).maybeSingle()
     if (targetError) throw targetError
     if (!target) return res.status(404).json({ error: 'That member profile no longer exists.' })
+    const { data: blocked, error: blockedError } = await adminSupabase.rpc('members_blocked', { first_id: user.id, second_id: followingId })
+    if (blockedError) throw blockedError
+    if (blocked) return res.status(403).json({ error: 'Following is unavailable for this member.' })
     const { error } = await adminSupabase.from('follows').upsert({ follower_id: user.id, following_id: followingId }, { onConflict: 'follower_id,following_id', ignoreDuplicates: true })
     if (error) throw error
-    await invalidateFollowCaches()
+    await invalidateMemberFollowCaches(user.id, followingId)
     return res.json({ following: true })
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not follow this member.' })
@@ -259,7 +314,7 @@ app.delete('/api/follows/:userId', async (req, res) => {
     if (!uuidPattern.test(followingId) || followingId === user.id) return res.status(400).json({ error: 'Choose a valid member.' })
     const { error } = await adminSupabase.from('follows').delete().eq('follower_id', user.id).eq('following_id', followingId)
     if (error) throw error
-    await invalidateFollowCaches()
+    await invalidateMemberFollowCaches(user.id, followingId)
     return res.json({ following: false })
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not update this follow.' })
@@ -331,20 +386,9 @@ app.post('/api/auth/signup', async (req, res) => {
     : { ...attempt, count: attempt.count + 1 }
   signupAttempts.set(attemptKey, nextAttempt)
 
-  const existingUsers = []
-  for (let page = 1; ; page += 1) {
-    const { data, error } = await adminSupabase.auth.admin.listUsers({ page, perPage: 1000 })
-    if (error) return res.status(503).json({ error: 'Could not validate account details. Try again.' })
-    existingUsers.push(...(data.users || []))
-    if ((data.users || []).length < 1000) break
-  }
-  if (existingUsers.some(existing => existing.email?.toLowerCase() === email)) {
-    return res.status(409).json({ error: 'An account with this email already exists.' })
-  }
-  if (existingUsers.some(existing => {
-    try { return normalizeWhatsAppNumber(String(existing.user_metadata?.phone || '')) === phone } catch { return false }
-  })) return res.status(409).json({ error: 'An account with this phone number already exists.' })
-
+  const phoneLookup = await adminSupabase.from('member_phone_numbers').select('user_id').eq('phone', phone.replace(/[^0-9]/g, '')).limit(1).maybeSingle()
+  if (phoneLookup.error) return res.status(503).json({ error: 'Phone registration is unavailable. Apply the member features SQL migration.' })
+  if (phoneLookup.data) return res.status(409).json({ error: 'An account with this phone number already exists.' })
   const { data, error } = await adminSupabase.auth.admin.createUser({
     email,
     password,
@@ -352,6 +396,9 @@ app.post('/api/auth/signup', async (req, res) => {
     user_metadata: { full_name: fullName, phone },
   })
   if (error) {
+    // The database unique constraint also protects concurrent signup requests.
+    const duplicatePhone = await adminSupabase.from('member_phone_numbers').select('user_id').eq('phone', phone.replace(/[^0-9]/g, '')).limit(1).maybeSingle()
+    if (duplicatePhone.data) return res.status(409).json({ error: 'An account with this phone number already exists.' })
     const duplicate = /already (registered|exists)|already been registered/i.test(error.message || '')
     return res.status(duplicate ? 409 : 400).json({ error: duplicate ? 'An account with this email already exists.' : error.message || 'Could not create the account.' })
   }
@@ -398,16 +445,14 @@ app.post('/api/profile/validate', async (req, res) => {
   } catch (error) {
     return res.status(400).json({ error: error.message })
   }
-  for (let page = 1; ; page += 1) {
-    const { data, error } = await adminSupabase.auth.admin.listUsers({ page, perPage: 1000 })
-    if (error) return res.status(503).json({ error: 'Could not validate this phone number. Try again.' })
-    const duplicate = (data.users || []).some(existing => {
-      if (existing.id === sessionData.user.id) return false
-      try { return normalizeWhatsAppNumber(String(existing.user_metadata?.phone || '')) === phone } catch { return false }
-    })
-    if (duplicate) return res.status(409).json({ error: 'This phone number is already linked to another account.' })
-    if ((data.users || []).length < 1000) break
-  }
+  const digits = phone.replace(/[^0-9]/g, '')
+  const existingDigits = String(sessionData.user.user_metadata?.phone || '').replace(/[^0-9]/g, '')
+  const existingPhone = existingDigits.length === 10 ? '91' + existingDigits : existingDigits
+  if (digits === existingPhone) return res.json({ phone })
+  const { data: duplicate, error: phoneError } = await adminSupabase.from('member_phone_numbers')
+    .select('user_id').eq('phone', digits).neq('user_id', sessionData.user.id).limit(1).maybeSingle()
+  if (phoneError) return res.status(503).json({ error: 'Could not validate the phone number.' })
+  if (duplicate) return res.status(409).json({ error: 'This phone number is already linked to another account.' })
   return res.json({ phone })
 })
 
@@ -728,6 +773,18 @@ async function listUserPhotoPaths(folder, depth = 0) {
   return paths
 }
 
+async function deleteMemberAccount(userId) {
+  const photoPaths = await listUserPhotoPaths(userId)
+  for (let index = 0; index < photoPaths.length; index += 1000) {
+    const { error } = await adminSupabase.storage.from('photo').remove(photoPaths.slice(index, index + 1000))
+    if (error) throw error
+  }
+  const { error } = await adminSupabase.auth.admin.deleteUser(userId)
+  if (error) throw error
+  await Promise.all([memberCacheVersionKey, postCacheVersionKey, followCacheVersionKey].map(bumpCacheVersion))
+  return photoPaths.length
+}
+
 app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
   if (!adminSupabase) return res.status(503).json({ error: 'Supabase admin access is not configured.' })
   const userId = req.params.id
@@ -735,16 +792,8 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Invalid user ID.' })
   }
   try {
-    const photoPaths = await listUserPhotoPaths(userId)
-    for (let index = 0; index < photoPaths.length; index += 1000) {
-      const { error } = await adminSupabase.storage.from('photo').remove(photoPaths.slice(index, index + 1000))
-      if (error) throw new Error(`Could not remove all user photos: ${error.message}`)
-    }
-    const { error } = await adminSupabase.auth.admin.deleteUser(userId)
-    if (error) throw error
-    await Promise.all([memberCacheVersionKey, postCacheVersionKey].map(bumpCacheVersion))
-    await invalidateFollowCaches()
-    return res.json({ deleted: true, removedPhotos: photoPaths.length })
+    const removedPhotos = await deleteMemberAccount(userId)
+    return res.json({ deleted: true, removedPhotos })
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not delete this user and their data.' })
   }
@@ -752,6 +801,7 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
 
 app.get('/api/admin/users/export', requireAdmin, async (_req, res) => {
   try {
+    const { default: ExcelJS } = await import('exceljs')
     const users = await listAdminUsers(7 * 24 * 60 * 60)
     const workbook = new ExcelJS.Workbook()
     workbook.creator = 'Northstar Admin'
@@ -777,6 +827,21 @@ app.get('/api/admin/users/export', requireAdmin, async (_req, res) => {
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not export users.' })
   }
+})
+
+registerMemberFeatures(app, {
+  database: adminSupabase,
+  getMember: getMemberForRequest,
+  requireAdmin,
+  invalidate: (firstId, secondId) => invalidateMemberFollowCaches(firstId, secondId),
+  deleteAccount: deleteMemberAccount,
+  verifyPassword: async (email, password) => {
+    const client = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false, autoRefreshToken: false } })
+    const { data, error } = await client.auth.signInWithPassword({ email, password })
+    if (error) return false
+    if (data.session) await client.auth.signOut({ scope: 'local' })
+    return true
+  },
 })
 
 app.use('/api', (req, res) => {
