@@ -1,3 +1,4 @@
+import { Search } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 export function ScrollMore({ hasMore, busy, loadMore }) {
@@ -54,7 +55,7 @@ export function MemberSearch({ api, openProfile }) {
     }, 300)
     return () => { active = false; clearTimeout(timer) }
   }, [query, api])
-  return <section className="member-search-panel"><label>Find members<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search by name" /></label>
+  return <section className="member-search-panel"><label><span>Find members</span><div className="member-search-input"><Search size={17} aria-hidden="true" /><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search by name" /></div></label>
     {busy && <p role="status">Searching…</p>}{error && <p role="alert">{error}</p>}
     {!busy && query.trim().length >= 2 && !members.length && !error && <p>No members found.</p>}
     {members.map(member => <button type="button" key={member.user_id} onClick={() => openProfile(member.user_id)}><strong>{member.full_name || 'Member'}</strong><span>{member.location}</span></button>)}
