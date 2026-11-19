@@ -42,6 +42,13 @@ let whatsappBulkProgress = null
 
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }))
 app.use(express.json())
+// API responses are per-session and must never be reused from a browser cache.
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.set('Pragma', 'no-cache')
+  res.set('Expires', '0')
+  next()
+})
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', supabaseConfigured: Boolean(supabaseUrl && supabaseKey) })

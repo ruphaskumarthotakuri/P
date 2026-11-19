@@ -5,6 +5,7 @@ import AdminLoginPage from './pages/AdminLoginPage.jsx'
 import AuthPage from './pages/AuthPage.jsx'
 import MemberPage from './pages/MemberPage.jsx'
 import { PageSkeleton } from './components/Skeletons.jsx'
+import AppErrorBoundary from './components/AppErrorBoundary.jsx'
 
 const FEED_PAGE_SIZE = 10
 const COMMENT_PAGE_SIZE = 2
@@ -87,6 +88,7 @@ async function memberApi(path, options = {}) {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session?.access_token) throw new Error('Your session has expired. Sign in again.')
   const response = await fetch(path, {
+    cache: 'no-store',
     ...options,
     headers: { Authorization: `Bearer ${session.access_token}`, ...(options.headers || {}) },
   })
@@ -213,7 +215,7 @@ export default function App() {
         return
       }
       try {
-        const response = await fetch('/api/me', { headers: { Authorization: `Bearer ${session.access_token}` } })
+        const response = await fetch('/api/me', { cache: 'no-store', headers: { Authorization: `Bearer ${session.access_token}` } })
         const result = await response.json()
         if (!response.ok) throw new Error(result.error)
         if (active) setUser(result.user)
@@ -230,7 +232,7 @@ export default function App() {
 
   useEffect(() => {
     let active = true
-    fetch('/api/admin/session').then(response => response.json()).then(result => {
+    fetch('/api/admin/session', { cache: 'no-store' }).then(response => response.json()).then(result => {
       if (active && result.authenticated) setAdminAuthenticated(true)
     }).catch(() => {})
     return () => { active = false }
@@ -1089,6 +1091,6 @@ export default function App() {
   if (checkingSession) return <PageSkeleton />
   if (adminAuthenticated) return <AdminPage app={pageProps} />
   if (adminView) return <AdminLoginPage app={pageProps} />
-  if (user) return <MemberPage app={pageProps} />
+  if (user) return <AppErrorBoundary><MemberPage app={pageProps} /></AppErrorBoundary>
   return <AuthPage app={pageProps} />
 }

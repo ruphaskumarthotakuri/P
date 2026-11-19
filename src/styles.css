@@ -184,6 +184,10 @@ form input:focus { border-color: #555; }
 .bulk-message-results ul { max-height: 220px; overflow: auto; margin: 9px 0 0; padding-left: 18px; line-height: 1.6; }
 .bulk-message-results p { margin: 8px 0 0; color: #788279; }
 .empty-state, .loading-row { padding: 24px; color: #768078; font-size: 13px; text-align: center; }
+.error-page { display: grid; min-height: 100vh; place-items: center; padding: 20px; background: #f3f5f1; }
+.error-card { width: min(100%, 520px); padding: 26px; border: 1px solid #e4e8e3; border-radius: 12px; background: #fff; box-shadow: 0 12px 36px #2633290b; }
+.error-card h1 { margin: 0; color: #253029; font-size: 21px; }
+.error-card p { margin: 10px 0 18px; color: #657168; font-size: 13px; overflow-wrap: anywhere; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .member-page { display: block; min-height: 100vh; padding: 0 20px 64px; background: #f6f7f5; }
 .member-shell { width: 100%; max-width: 940px; margin: 0 auto; overflow: hidden; border: 1px solid #e4e8e3; border-top: 0; border-radius: 0 0 12px 12px; background: #fff; }
