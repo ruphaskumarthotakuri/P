@@ -1,3 +1,4 @@
+import Brand from '../components/Brand.jsx'
 import { Send } from 'lucide-react'
 import ModerationQueue from '../components/ModerationQueue.jsx'
 import { TableSkeleton } from '../components/Skeletons.jsx'
@@ -15,7 +16,7 @@ export default function AdminPage({ app }) {
   return (
     <main className="page admin-page">
       <section className="admin-panel">
-        <div className="admin-brandbar"><span className="brand-mark">N</span><span>Northstar <span className="brand-divider">/</span> Admin</span><button className="secondary-button" onClick={handleAdminLogout}>Sign out</button></div>
+        <div className="admin-brandbar"><Brand /><span><span className="brand-divider">/</span> Admin</span><button className="secondary-button" onClick={handleAdminLogout}>Sign out</button></div>
         <header className="admin-header">
           <div><p className="eyebrow">MEMBER MANAGEMENT</p><h1>User dashboard</h1><p className="admin-intro">Review member profiles and manage verification.</p></div>
           <div className="admin-header-actions"><button className="primary-button bulk-message-button" disabled={!selectedVerifiedUsers.length || !whatsappAdminStatus?.authorized || usersBusy || adminMessageBusy} onClick={() => { setMessageTarget({ bulk: true, userIds: selectedVerifiedUsers.map(member => member.id), name: `${selectedVerifiedUsers.length} selected verified members` }); setAdminMessage(''); setAdminMessageNotice(null); setBulkMessageResults([]) }}><Send size={14} /> Message selected ({selectedVerifiedUsers.length})</button><button className="primary-button export-button" onClick={exportUsers}>Export Excel <span aria-hidden="true">↓</span></button></div>

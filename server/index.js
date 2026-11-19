@@ -593,7 +593,7 @@ app.get('/api/admin/whatsapp/status', requireAdmin, async (_req, res) => {
 
 app.post('/api/admin/whatsapp/unlink', requireAdmin, async (_req, res) => {
   if (runningOnVercel) {
-    return res.status(503).json({ error: 'WhatsApp cannot be unlinked from this Vercel serverless deployment. Remove Northstar from WhatsApp → Linked devices.' })
+    return res.status(503).json({ error: 'WhatsApp cannot be unlinked from this Vercel serverless deployment. Remove MinstryConnect from WhatsApp → Linked devices.' })
   }
   try {
     return res.json({ unlinked: true, ...await unlinkWhatsApp() })
@@ -804,7 +804,7 @@ app.get('/api/admin/users/export', requireAdmin, async (_req, res) => {
     const { default: ExcelJS } = await import('exceljs')
     const users = await listAdminUsers(7 * 24 * 60 * 60)
     const workbook = new ExcelJS.Workbook()
-    workbook.creator = 'Northstar Admin'
+    workbook.creator = 'MinstryConnect Admin'
     const sheet = workbook.addWorksheet('Users')
     const columns = [
       ['id', 'User ID'], ['email', 'Email'], ['name', 'Name'], ['phone', 'Phone'],
@@ -822,7 +822,7 @@ app.get('/api/admin/users/export', requireAdmin, async (_req, res) => {
     sheet.views = [{ state: 'frozen', ySplit: 1 }]
     const file = Buffer.from(await workbook.xlsx.writeBuffer())
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', 'attachment; filename="northstar-users.xlsx"')
+    res.setHeader('Content-Disposition', 'attachment; filename="minstryconnect-users.xlsx"')
     return res.send(file)
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not export users.' })
@@ -857,7 +857,7 @@ app.get(/.*/, (_req, res, next) => {
 
 if (!runningOnVercel) {
   app.listen(port, () => {
-    console.log(`Northstar API listening on http://localhost:${port}`)
+    console.log(`MinstryConnect API listening on http://localhost:${port}`)
     startWhatsApp()
   })
 }

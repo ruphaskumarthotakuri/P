@@ -1,3 +1,4 @@
+import Brand from '../components/Brand.jsx'
 import FormField from '../components/FormField.jsx'
 
 export default function AuthPage({ app }) {
@@ -5,6 +6,7 @@ export default function AuthPage({ app }) {
   return (
     <main className="page">
       <section className="form-panel">
+        <Brand full />
         <h1>{isSignup ? 'Create an account' : 'Sign in'}</h1>
         <p className="subtitle">{isSignup ? 'Enter your details to get started.' : 'Enter your email and password.'}</p>
         <div className="mode-switch">

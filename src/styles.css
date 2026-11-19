@@ -225,6 +225,11 @@ fieldset.composer-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
 .member-page { display: block; min-height: 100vh; padding: 0 20px 64px; background: #f6f7f5; }
 .member-shell { width: 100%; max-width: 940px; margin: 0 auto; overflow: hidden; border: 1px solid #e4e8e3; border-top: 0; border-radius: 0 0 12px 12px; background: #fff; }
 .member-brand { color: #183e32; font-family: Georgia, serif; font-size: 19px; font-weight: 700; text-decoration: none; }
+.ministry-brand { display: inline-flex; align-items: center; gap: 8px; color: #062951; font-family: 'Manrope', sans-serif; font-size: 18px; font-weight: 800; letter-spacing: -.7px; white-space: nowrap; }
+.ministry-brand > img { display: block; width: 48px; height: 38px; object-fit: contain; }
+.ministry-brand .brand-connect { color: #b87500; }
+.brand-full-logo { display: block; width: min(100%, 260px); height: auto; margin: 0 auto 24px; }
+@media (max-width: 760px) { .ministry-brand { font-size: 15px; } .ministry-brand > img { width: 38px; height: 32px; } }
 .profile-overview { display: flex; align-items: center; gap: 26px; padding: 36px 44px 28px; }
 .profile-large-avatar { width: 112px; height: 112px; flex: 0 0 112px; border-radius: 50%; object-fit: cover; }
 .profile-avatar-empty { display: grid; place-items: center; background: #e8eee8; color: #476352; font-family: Georgia, serif; font-size: 38px; }
@@ -606,6 +611,10 @@ fieldset.composer-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
 .header-new-post:hover { background: #245642; }
 .member-topbar-actions .member-signout { border-color: #dce6de; background: #fff; color: #345244; }
 .member-topbar-actions .member-signout:hover { background: #f4f7f4; }
+@media (min-width: 651px) and (max-width: 800px) {
+  .member-topbar-inner { flex-wrap: wrap; gap: 0 12px; padding-top: 10px; }
+  .member-tabs { order: 3; width: 100%; min-height: 44px; margin-top: 6px; }
+}
 .member-topbar button:focus-visible, .mobile-bottom-bar button:focus-visible { outline: 3px solid #8eae98; outline-offset: 3px; }
 
 @media (max-width: 650px) {

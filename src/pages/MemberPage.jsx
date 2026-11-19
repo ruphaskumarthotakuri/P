@@ -1,3 +1,4 @@
+import Brand from '../components/Brand.jsx'
 import { ArrowLeft, ArrowUpRight, Bell, Camera, Facebook, Heart, Home, Instagram, LogOut, MapPin, MessageCircle, Plus, Send, Settings, UserRound, Youtube } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccountSettings, EditActions, MemberSearch, ScrollMore } from '../components/MemberTools.jsx'
@@ -108,7 +109,7 @@ export default function MemberPage({ app }) {
         setProfileNotice({ kind: 'error', text: 'Could not capture the photo. Please try again.' })
         return
       }
-      setPostFile(new File([blob], `northstar-post-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+      setPostFile(new File([blob], `minstryconnect-post-${Date.now()}.jpg`, { type: 'image/jpeg' }))
       setPostLocation(null)
       setCameraStream(null)
     }, 'image/jpeg', 0.92)
@@ -121,7 +122,7 @@ export default function MemberPage({ app }) {
         <header className="member-topbar">
           <div className="member-topbar-inner">
             <button className="member-brand" type="button" onClick={() => setProfileTab(profileComplete ? 'feed' : 'settings')}>
-              <span className="brand-mark" aria-hidden="true">N</span>Northstar
+              <Brand />
             </button>
             <nav className="member-tabs" aria-label="Member navigation">
               {profileComplete && <>
@@ -160,7 +161,7 @@ export default function MemberPage({ app }) {
             <button className="primary-button save-settings" type="submit" disabled={profileBusy}>{profileBusy ? 'Saving…' : 'Save settings'}</button>
           </form>
           <AccountSettings api={memberApi} supabase={supabase} user={user} notify={setProfileNotice} />
-        </section> : profileTab === 'notifications' ? <section className="notifications-content"><header className="feed-heading"><div><p className="eyebrow">ACTIVITY</p><h1>Notifications</h1><button type="button" className="empty-post-button" disabled={!unreadCount} onClick={markAllNotificationsRead}>Mark all read</button><p>New members, followers, likes, and comments.</p></div></header>{notificationsError ? <p className="posts-setup-note" role="status">{notificationsError}</p> : notificationsBusy && !notifications.length ? <div className="network-list-message">Loading notifications…</div> : notifications.length ? <div className="notifications-list">{notifications.map(item => { const activity = item.kind === 'new_member' ? 'joined Northstar' : item.kind === 'follow' ? 'started following you' : item.kind === 'like' ? 'liked your post' : 'commented on your post'; return <button className={`notification-item ${item.read_at ? '' : 'unread'}`} type="button" key={item.id} onClick={() => openNotification(item)}>{item.actor?.avatar_url ? <img src={item.actor.avatar_url} alt="" loading="lazy" /> : <span className="network-avatar-fallback">{(item.actor?.full_name || 'M').slice(0, 1).toUpperCase()}</span>}<span className="notification-copy"><span><strong>{item.actor?.full_name || 'A member'}</strong> {activity}</span><time>{new Date(item.created_at).toLocaleString()}</time></span>{!item.read_at && <span className="notification-unread-dot" aria-label="Unread" />}</button> })}</div> : <div className="posts-empty"><span><Bell size={20} /></span><strong>No notifications yet</strong><p>New member activity will appear here.</p></div>}</section> : profileTab === 'feed' ? <section className="feed-content">
+        </section> : profileTab === 'notifications' ? <section className="notifications-content"><header className="feed-heading"><div><p className="eyebrow">ACTIVITY</p><h1>Notifications</h1><button type="button" className="empty-post-button" disabled={!unreadCount} onClick={markAllNotificationsRead}>Mark all read</button><p>New members, followers, likes, and comments.</p></div></header>{notificationsError ? <p className="posts-setup-note" role="status">{notificationsError}</p> : notificationsBusy && !notifications.length ? <div className="network-list-message">Loading notifications…</div> : notifications.length ? <div className="notifications-list">{notifications.map(item => { const activity = item.kind === 'new_member' ? 'joined MinstryConnect' : item.kind === 'follow' ? 'started following you' : item.kind === 'like' ? 'liked your post' : 'commented on your post'; return <button className={`notification-item ${item.read_at ? '' : 'unread'}`} type="button" key={item.id} onClick={() => openNotification(item)}>{item.actor?.avatar_url ? <img src={item.actor.avatar_url} alt="" loading="lazy" /> : <span className="network-avatar-fallback">{(item.actor?.full_name || 'M').slice(0, 1).toUpperCase()}</span>}<span className="notification-copy"><span><strong>{item.actor?.full_name || 'A member'}</strong> {activity}</span><time>{new Date(item.created_at).toLocaleString()}</time></span>{!item.read_at && <span className="notification-unread-dot" aria-label="Unread" />}</button> })}</div> : <div className="posts-empty"><span><Bell size={20} /></span><strong>No notifications yet</strong><p>New member activity will appear here.</p></div>}</section> : profileTab === 'feed' ? <section className="feed-content">
           <header className="feed-heading"><div><p className="eyebrow">COMMUNITY</p><h1>Member feed</h1><p>Recent photos shared by members.</p></div></header>
           <MemberSearch api={memberApi} openProfile={openMemberProfile} />
           {feedError ? <p className="posts-setup-note" role="status">{feedError}</p> : feedBusy ? <FeedSkeleton /> : feedPosts.length ? <><div className="feed-list">{feedPosts.map(post => <article className="feed-post" key={post.id}>

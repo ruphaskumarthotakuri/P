@@ -198,7 +198,7 @@ export default function App() {
       : whatsappAdminStatus?.connected ? (whatsappAdminStatus.expectedNumber ? 'WhatsApp account mismatch' : 'Set the sender number')
         : 'Link WhatsApp'
   const whatsappDisplayMessage = whatsappStatusError || (whatsappAdminStatus?.serverless
-    ? 'Vercel serverless cannot keep the WhatsApp connection running. To unlink an existing device, remove Northstar in WhatsApp → Linked devices.'
+    ? 'Vercel serverless cannot keep the WhatsApp connection running. To unlink an existing device, remove MinstryConnect in WhatsApp → Linked devices.'
     : whatsappAdminStatus?.bulkProgress
     ? `Sending ${whatsappAdminStatus.bulkProgress.processed + 1} of ${whatsappAdminStatus.bulkProgress.total} to members. Sent ${whatsappAdminStatus.bulkProgress.sent} so far.`
     : whatsappAdminStatus?.authorized
@@ -1101,7 +1101,7 @@ export default function App() {
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = 'northstar-users.xlsx'
+      anchor.download = 'minstryconnect-users.xlsx'
       anchor.click()
       URL.revokeObjectURL(url)
     } catch (error) {

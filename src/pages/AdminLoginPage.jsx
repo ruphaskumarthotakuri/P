@@ -1,3 +1,4 @@
+import Brand from '../components/Brand.jsx'
 import FormField from '../components/FormField.jsx'
 
 export default function AdminLoginPage({ app }) {
@@ -5,6 +6,7 @@ export default function AdminLoginPage({ app }) {
   return (
     <main className="page">
       <section className="form-panel">
+        <Brand full />
         <h1>Admin sign in</h1>
         <p className="subtitle">Sign in to view user profiles.</p>
         <form onSubmit={handleAdminLogin}>
