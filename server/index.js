@@ -175,25 +175,33 @@ app.get('/api/feed/posts', async (req, res) => {
   if (!adminSupabase) return res.status(503).json({ error: 'Supabase server access is not configured.' })
   const offset = Number(req.query.offset || 0)
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100000) return res.status(400).json({ error: 'Choose a valid feed position.' })
+  const liveIds = typeof req.query.live === 'string' ? req.query.live.split(',') : []
+  if (liveIds.length > 20 || liveIds.some(id => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))) {
+    return res.status(400).json({ error: 'Invalid live post IDs.' })
+  }
   try {
     const user = await getMemberForRequest(req)
     if (!user) return res.status(401).json({ error: 'Sign in to load the member feed.' })
     const ordering = await getMemberFeedOrdering(user)
     const [postVersion, followVersion, memberVersion] = [
-      await readCacheVersion(postCacheVersionKey), ordering.versions.follows, ordering.versions.members,
+      req.query.fresh === '1' || liveIds.length ? null : await readCacheVersion(postCacheVersionKey), ordering.versions.follows, ordering.versions.members,
     ]
-    const canCache = Boolean(redis && postVersion != null && followVersion != null && memberVersion != null)
+    const canCache = Boolean(req.query.fresh !== '1' && redis && postVersion != null && followVersion != null && memberVersion != null)
     const pageKey = canCache
       ? `northstar:feed:page:v1:${user.id}:${followVersion}:${memberVersion}:${postVersion}:${offset}`
       : null
     if (pageKey) {
       try {
         const cached = await redis.get(pageKey)
-        if (cached && Array.isArray(cached.posts)) return res.json({ ...await enrichFeedPage(cached, user.id), ...ordering, cache: 'hit' })
+        if (cached && Array.isArray(cached.posts)) return res.json({ ...await enrichFeedPage(cached, user.id), ...ordering, nextOffset: offset + cached.posts.length, cache: 'hit' })
       } catch { /* Fetch the authoritative page from Supabase when Redis is unavailable. */ }
     }
     const followedIds = ordering.followedIds.filter(id => id !== user.id).slice(0, 500)
     const discoveryIds = ordering.discoveryIds.filter(id => id !== user.id && !followedIds.includes(id)).slice(0, 150)
+    const fields = 'id, user_id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at'
+    const liveQuery = liveIds.length
+      ? Promise.resolve(adminSupabase.from('posts').select(fields).in('id', liveIds))
+      : Promise.resolve({ data: [], error: null })
     const followedQuery = followedIds.length
       ? adminSupabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at', { count: 'exact' }).in('user_id', followedIds).order('created_at', { ascending: false }).order('id', { ascending: false }).range(offset, offset + feedPageSize - 1)
       : Promise.resolve({ data: [], count: 0, error: null })
@@ -205,14 +213,19 @@ app.get('/api/feed/posts', async (req, res) => {
     const discoveryQuery = slotsLeft > 0 && discoveryIds.length
       ? adminSupabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at').in('user_id', discoveryIds).order('created_at', { ascending: false }).order('id', { ascending: false }).range(discoveryOffset, discoveryOffset + slotsLeft - 1)
       : Promise.resolve({ data: [], error: null })
-    const { data: discoveryRows, error: discoveryError } = await discoveryQuery
+    const [{ data: discoveryRows, error: discoveryError }, live] = await Promise.all([discoveryQuery, liveQuery])
     if (discoveryError) throw discoveryError
+    if (live.error) throw live.error
     const page = {
       posts: [...followedPosts, ...(discoveryRows || [])],
       hasMore: [...followedPosts, ...(discoveryRows || [])].length === feedPageSize,
     }
     if (pageKey) { try { await redis.set(pageKey, page, { ex: 45 }) } catch { /* Feed still works without a Redis write. */ } }
-    return res.json({ ...await enrichFeedPage(page, user.id), ...ordering, cache: pageKey ? 'miss' : 'disabled' })
+    const eligibleAuthors = new Set([...followedIds, ...discoveryIds])
+    const pageIds = new Set(page.posts.map(post => post.id))
+    const extraPosts = live.data.filter(post => eligibleAuthors.has(post.user_id) && !pageIds.has(post.id))
+    const enriched = await enrichFeedPage({ ...page, posts: [...page.posts, ...extraPosts] }, user.id)
+    return res.json({ ...enriched, ...ordering, nextOffset: offset + page.posts.length, cache: pageKey ? 'miss' : 'disabled' })
   } catch (error) {
     return res.status(503).json({ error: error.message || 'Could not load the member feed.' })
   }

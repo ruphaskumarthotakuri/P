@@ -127,6 +127,8 @@ export default function App() {
   const [feedOwner, setFeedOwner] = useState(null)
   const [feedRevision, setFeedRevision] = useState(0)
   const feedOffset = useRef(0)
+  const feedPageGeneration = useRef(0)
+  const feedNeedsFreshPages = useRef(false)
   const [feedPosts, setFeedPosts] = useState([])
   const [feedBusy, setFeedBusy] = useState(false)
   const [feedError, setFeedError] = useState('')
@@ -346,9 +348,12 @@ export default function App() {
     return () => { active = false }
   }, [user?.id])
 
-  async function fetchFeedPage(offset) {
-    const page = await memberApi(`/api/feed/posts?offset=${offset}`)
-    return { posts: page.posts || [], hasMore: Boolean(page.hasMore), followedIds: page.followedIds || [] }
+  async function fetchFeedPage(offset, fresh = false, liveIds = []) {
+    const params = new URLSearchParams({ offset })
+    if (fresh) params.set('fresh', '1')
+    if (liveIds.length) params.set('live', liveIds.join(','))
+    const page = await memberApi(`/api/feed/posts?${params}`)
+    return { posts: page.posts || [], hasMore: Boolean(page.hasMore), followedIds: page.followedIds || [], nextOffset: page.nextOffset }
   }
 
   useEffect(() => {
@@ -359,6 +364,71 @@ export default function App() {
   useEffect(() => {
     if (!user || !supabase || feedOwner !== user.id) return
     let active = true
+    let initialLoading = true
+    let syncing = false
+    let pending = false
+    let connected = false
+    let retryTimer
+    let attempts = 0
+    const insertedIds = new Set()
+    feedPageGeneration.current += 1
+    feedNeedsFreshPages.current = false
+
+    async function syncNewPosts() {
+      if (!active || initialLoading || syncing || !pending) return
+      pending = false
+      syncing = true
+      const liveIds = [...insertedIds].slice(0, 20)
+      for (const id of liveIds) insertedIds.delete(id)
+      try {
+        // The insert event can arrive before the publisher invalidates Redis.
+        const page = await fetchFeedPage(0, true, liveIds)
+        if (!active) return
+        const followed = new Set(page.followedIds)
+        setFeedFollowingIds(page.followedIds)
+        setFeedPosts(current => {
+          const ids = new Set(current.map(post => post.id))
+          return [...current, ...page.posts.filter(post => !ids.has(post.id))].sort((a, b) =>
+            Number(followed.has(b.user_id)) - Number(followed.has(a.user_id)) ||
+            b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))
+        })
+        // Inserts can shift offsets. Resume from the refreshed first page and deduplicate.
+        feedPageGeneration.current += 1
+        feedOffset.current = page.nextOffset
+        feedNeedsFreshPages.current = true
+        setFeedHasMore(page.hasMore)
+        setFeedError('')
+        attempts = 0
+      } catch {
+        if (active && attempts < 2) {
+          for (const id of liveIds) insertedIds.add(id)
+          attempts += 1
+          retryTimer = setTimeout(queueSync, attempts * 1000)
+        }
+      } finally {
+        syncing = false
+        if (pending || (attempts === 0 && insertedIds.size)) queueSync()
+      }
+    }
+
+    function queueSync() {
+      pending = true
+      syncNewPosts()
+    }
+
+    const channel = supabase.channel(`member-feed-${user.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, ({ new: post }) => {
+        if (post.user_id !== user.id) {
+          insertedIds.add(post.id)
+          queueSync()
+        }
+      })
+      .subscribe(status => {
+        if (status !== 'SUBSCRIBED') return
+        if (connected) queueSync()
+        connected = true
+      })
+
     setFeedBusy(true)
     setFeedHasMore(false)
     setFeedPosts([])
@@ -369,13 +439,21 @@ export default function App() {
         if (active && result) {
           setFeedFollowingIds(result.followedIds)
           setFeedPosts(result.posts)
-          feedOffset.current = result.posts.length
+          feedOffset.current = result.nextOffset
           setFeedHasMore(result.hasMore)
         }
       })
       .catch(error => { if (active) setFeedError(`Could not load the feed. ${error.message.includes('follows') ? 'Run supabase/follows-schema.sql in Supabase SQL Editor.' : 'Check your posts schema and server environment.'} (${error.message})`) })
-      .finally(() => { if (active) setFeedBusy(false) })
-    return () => { active = false }
+      .finally(() => {
+        initialLoading = false
+        if (active) { setFeedBusy(false); syncNewPosts() }
+      })
+    return () => {
+      active = false
+      clearTimeout(retryTimer)
+      feedPageGeneration.current += 1
+      supabase.removeChannel(channel)
+    }
   }, [feedOwner, user?.id, feedRevision])
 
   useEffect(() => {
@@ -536,14 +614,16 @@ export default function App() {
 
   async function loadMoreFeedPosts() {
     if (!supabase || !user || feedMoreBusy || !feedHasMore) return
+    const generation = feedPageGeneration.current
     setFeedMoreBusy(true)
     try {
-      const { posts: page, hasMore } = await fetchFeedPage(feedOffset.current)
-      feedOffset.current += page.length
+      const { posts: page, hasMore, nextOffset } = await fetchFeedPage(feedOffset.current, feedNeedsFreshPages.current)
+      if (generation !== feedPageGeneration.current) return
+      feedOffset.current = nextOffset
       setFeedPosts(current => [...current, ...page.filter(post => !current.some(existing => existing.id === post.id))])
       setFeedHasMore(hasMore)
     } catch (error) {
-      setFeedError(`Could not load more posts. (${error.message})`)
+      if (generation === feedPageGeneration.current) setFeedError(`Could not load more posts. (${error.message})`)
     } finally {
       setFeedMoreBusy(false)
     }
