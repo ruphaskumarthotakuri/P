@@ -217,6 +217,23 @@ app.get('/api/feed/posts', async (req, res) => {
   }
 })
 
+app.post('/api/posts/activity', async (req, res) => {
+  if (!adminSupabase) return res.status(503).json({ error: 'Database access is unavailable.' })
+  try {
+    const user = await getMemberForRequest(req)
+    if (!user) return res.status(401).json({ error: 'Sign in to view post activity.' })
+    const ids = req.body?.ids
+    if (!Array.isArray(ids) || !ids.length || ids.length > 30 || ids.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))) {
+      return res.status(400).json({ error: 'Invalid post IDs.' })
+    }
+    const { data, error } = await adminSupabase.rpc('feed_post_details', { post_ids: ids, viewer_id: user.id })
+    if (error) throw error
+    return res.json({ details: data })
+  } catch {
+    return res.status(503).json({ error: 'Could not load post activity.' })
+  }
+})
+
 app.get('/api/follows/:userId', async (req, res) => {
   if (!adminSupabase) return res.status(503).json({ error: 'Supabase server access is not configured.' })
   try {
@@ -368,6 +385,10 @@ app.post('/api/auth/signup', async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase()
   const password = String(req.body?.password || '')
   const fullName = String(req.body?.full_name || '').trim()
+  const memberType = req.body?.member_type
+  const description = String(req.body?.description || '').trim()
+  if (!['pastor', 'believer'].includes(memberType)) return res.status(400).json({ error: 'Choose Pastor or Believer.' })
+  if (description.length < 2 || description.length > 2000) return res.status(400).json({ error: 'Description must be between 2 and 2,000 characters.' })
   let phone
   try { phone = normalizeWhatsAppNumber(String(req.body?.phone || '').trim()) } catch {
     return res.status(400).json({ error: 'Enter a valid Indian mobile number.' })
@@ -393,7 +414,7 @@ app.post('/api/auth/signup', async (req, res) => {
     email,
     password,
     email_confirm: true,
-    user_metadata: { full_name: fullName, phone },
+    user_metadata: { full_name: fullName, phone, member_type: memberType, description },
   })
   if (error) {
     // The database unique constraint also protects concurrent signup requests.
@@ -423,6 +444,7 @@ app.post('/api/profile/validate', async (req, res) => {
     return res.status(400).json({ error: 'Enter a valid Indian mobile number.' })
   }
   try {
+    if (/[\x00-\x1f<>]/.test(textField('full_name', 'Full name', 2, 120))) throw new Error('Enter a valid full name.')
     textField('education', 'Education', 2, 120)
     textField('description', 'Description', 2, 2000)
     textField('location', 'Location', 2, 200)

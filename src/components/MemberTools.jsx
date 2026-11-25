@@ -55,10 +55,12 @@ export function MemberSearch({ api, openProfile }) {
     }, 300)
     return () => { active = false; clearTimeout(timer) }
   }, [query, api])
-  return <section className="member-search-panel"><label><span>Find members</span><div className="member-search-input"><Search size={17} aria-hidden="true" /><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search by name" /></div></label>
+  return <section className="member-search-panel"><label className="member-search-input"><span className="sr-only">Find members</span><Search size={17} aria-hidden="true" /><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search members" /></label>
+    {query.trim().length >= 2 && <div className="member-search-results" aria-label="Member search results">
     {busy && <p role="status">Searching…</p>}{error && <p role="alert">{error}</p>}
     {!busy && query.trim().length >= 2 && !members.length && !error && <p>No members found.</p>}
-    {members.map(member => <button type="button" key={member.user_id} onClick={() => openProfile(member.user_id)}><strong>{member.full_name || 'Member'}</strong><span>{member.location}</span></button>)}
+    {members.map(member => <button type="button" key={member.user_id} onClick={() => { setQuery(''); openProfile(member.user_id) }}><strong>{member.full_name || 'Member'}</strong><span>{member.location}</span></button>)}
+    </div>}
   </section>
 }
 

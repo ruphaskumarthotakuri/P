@@ -2,7 +2,7 @@ import Brand from '../components/Brand.jsx'
 import FormField from '../components/FormField.jsx'
 
 export default function AuthPage({ app }) {
-  const { isSignup, setMode, setNotice, name, setName, email, setEmail, signupPhone, setSignupPhone, password, setPassword, handleSubmit, sendPasswordReset, notice, busy, isSupabaseConfigured, setAdminView, setAdminNotice } = app
+  const { isSignup, setMode, setNotice, name, setName, email, setEmail, signupPhone, setSignupPhone, memberType, setMemberType, signupDescription, setSignupDescription, password, setPassword, handleSubmit, sendPasswordReset, notice, busy, isSupabaseConfigured, setAdminView, setAdminNotice } = app
   return (
     <main className="page">
       <section className="form-panel">
@@ -17,6 +17,18 @@ export default function AuthPage({ app }) {
           {isSignup && <FormField label="Name" autoComplete="name" value={name} onChange={event => setName(event.target.value)} minLength={2} maxLength={120} required />}
           <FormField label="Email" type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} maxLength={254} required />
           {isSignup && <FormField label="Phone number" type="tel" autoComplete="tel" value={signupPhone} onChange={event => setSignupPhone(event.target.value)} maxLength={20} placeholder="+91 98765 43210" required />}
+          {isSignup && <>
+            <label className="signup-field">I am a
+              <select value={memberType} onChange={event => setMemberType(event.target.value)} required>
+                <option value="">Choose an option</option>
+                <option value="pastor">Pastor</option>
+                <option value="believer">Believer</option>
+              </select>
+            </label>
+            <label className="signup-field">Description
+              <textarea value={signupDescription} onChange={event => setSignupDescription(event.target.value)} rows={3} minLength={2} maxLength={2000} required />
+            </label>
+          </>}
           <FormField label="Password" type="password" autoComplete={isSignup ? 'new-password' : 'current-password'} minLength={8} maxLength={128} value={password} onChange={event => setPassword(event.target.value)} required />
           {!isSignup && <button className="link-button" type="button" onClick={sendPasswordReset}>Forgot password?</button>}
           {notice && <p className={`notice ${notice.kind}`} role="status">{notice.text}</p>}
