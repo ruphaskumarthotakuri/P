@@ -327,12 +327,8 @@ export default function App() {
         if (active) setProfilePostCount(count || 0)
         const rows = (data || []).slice(0, 12)
         if (active) setProfilePostsMore((data || []).length > 12)
-        const { data: signed } = rows.length
-          ? await supabase.storage.from('photo').createSignedUrls(rows.map(post => post.image_path), 3600)
-          : { data: [] }
-        const urls = new Map((signed || []).map(item => [item.path, item.signedUrl || '']))
-        const enriched = await addPostActivity(rows.map(post => ({ ...post, image_url: urls.get(post.image_path) })))
-        if (active) setPosts(enriched)
+        const [media, enriched] = await Promise.all([addSignedPhotoUrls(supabase, rows), addPostActivity(rows)])
+        if (active) setPosts(media.posts.map((post, index) => ({ ...post, ...enriched[index] })))
       })
       .catch(error => { if (active) setPostsLoadError(error.message.includes("Could not find the table 'public.posts'") ? 'Photo posts are not set up yet. Run supabase/posts-schema.sql in your Supabase SQL Editor.' : `Could not load posts: ${error.message}`) })
       .finally(() => { if (active) setPostsBusy(false) })
@@ -398,9 +394,11 @@ export default function App() {
       setNotificationsBusy(true)
       setNotificationsError('')
       try {
-        const { data, error } = await supabase.from('notifications')
-          .select('id, actor_id, kind, post_id, created_at, read_at')
+        const fields = 'id, actor_id, kind, post_id, created_at, read_at'
+        const query = fields => supabase.from('notifications').select(fields)
           .eq('recipient_id', user.id).order('created_at', { ascending: false }).limit(50)
+        let { data, error } = await query(fields + ', comment:post_comments(content)')
+        if (error?.code === 'PGRST200') ({ data, error } = await query(fields))
         if (error) throw error
         const rows = data || []
         const actorIds = [...new Set(rows.map(item => item.actor_id).filter(Boolean))]
@@ -422,6 +420,29 @@ export default function App() {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${user.id}` }, loadNotifications)
       .subscribe()
     return () => { active = false; supabase.removeChannel(channel) }
+  }, [user?.id])
+
+  useEffect(() => {
+    if (!user?.id) return
+    const openPush = async id => {
+      if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) return
+      setProfileTab('notifications')
+      const { data } = await supabase.from('notifications').select('id, actor_id, kind, post_id, read_at')
+        .eq('id', id).eq('recipient_id', user.id).maybeSingle()
+      if (data) await openNotification(data)
+    }
+    const url = new URL(window.location.href)
+    const id = url.searchParams.get('notification')
+    if (id) {
+      url.searchParams.delete('notification')
+      window.history.replaceState(null, '', url)
+      openPush(id)
+    }
+    const receivePush = event => {
+      if (event.source?.scriptURL === new URL('/push-worker.js', window.location.origin).href) openPush(event.data?.notificationId)
+    }
+    navigator.serviceWorker?.addEventListener('message', receivePush)
+    return () => navigator.serviceWorker?.removeEventListener('message', receivePush)
   }, [user?.id])
 
   async function openNotification(item) {
@@ -610,17 +631,19 @@ export default function App() {
     const batchSize = loadAll ? Math.min(100, Math.max(1, (post.comments_total || 0) - offset)) : COMMENT_PAGE_SIZE
     setLoadingCommentPost(post.id)
     try {
-      const countResult = await supabase.from('post_comments').select('id', { count: 'exact', head: true }).eq('post_id', post.id)
-      if (countResult.error) throw countResult.error
       let query = supabase.from('post_comments')
-        .select('id, post_id, user_id, content, created_at', { count: 'exact' })
+        .select('id, post_id, user_id, content, created_at')
         .eq('post_id', post.id)
         .order('created_at', { ascending: false })
         .order('id', { ascending: false }).limit(batchSize)
       const oldest = post.comments?.[post.comments.length - 1]
       if (oldest) query = query.or(`created_at.lt.${oldest.created_at},and(created_at.eq.${oldest.created_at},id.lt.${oldest.id})`)
-      const { data, error } = await query
+      const [{ data, error }, countResult] = await Promise.all([
+        query,
+        supabase.from('post_comments').select('id', { count: 'exact', head: true }).eq('post_id', post.id),
+      ])
       if (error) throw error
+      if (countResult.error) throw countResult.error
       const commentUserIds = [...new Set((data || []).map(comment => comment.user_id))]
       const { data: commentProfiles, error: profilesError } = commentUserIds.length
         ? await supabase.from('profiles').select('user_id, full_name').in('user_id', commentUserIds)
@@ -677,22 +700,38 @@ export default function App() {
     setViewedProfileError('')
     setViewedProfile(null)
     setViewedProfilePosts([])
+    setViewedFollowStats(null)
     try {
-      const [{ data: profileRow, error: profileError }, { data: postRows, count: postCount, error: postsError }, followStats] = await Promise.all([
-        supabase.from('profiles').select('user_id, full_name, education, description, location, latitude, longitude, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').eq('user_id', userId).single(),
-        supabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, latitude, longitude, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(13),
-        memberApi(`/api/follows/${userId}`),
-      ])
+      const profileRequest = supabase.from('profiles').select('user_id, full_name, education, description, location, church_name, church_location, instagram_url, facebook_url, youtube_url, avatar_path').eq('user_id', userId).single()
+      const postsRequest = Promise.resolve(supabase.from('posts').select('id, user_id, image_path, thumbnail_path, caption, location, created_at', { count: 'exact' })
+        .eq('user_id', userId).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(13))
+      memberApi(`/api/follows/${userId}`).then(stats => {
+        if (requestId === profilePostsRequestRef.current) setViewedFollowStats({ ...stats, userId })
+      }).catch(() => {})
+      const { data: profileRow, error: profileError } = await profileRequest
       if (profileError) throw profileError
+      if (requestId !== profilePostsRequestRef.current) return
+      setViewedProfile(profileRow)
+      setViewedProfileBusy(false)
+
+      const { data: postRows, count: postCount, error: postsError } = await postsRequest
       if (postsError) throw postsError
-      const result = await addSignedPhotoUrls(supabase, (postRows || []).slice(0, 12), [profileRow])
-      const [verifiedUsers, enrichedPosts] = await Promise.all([fetchVerifiedUsers([userId]), addPostActivity(result.posts)])
+      const rows = (postRows || []).slice(0, 12)
+      const [result, activity] = await Promise.all([
+        addSignedPhotoUrls(supabase, rows, [profileRow]),
+        addPostActivity(rows),
+      ])
       if (requestId !== profilePostsRequestRef.current) return
       setViewedPostsMore((postRows || []).length > 12)
       setViewedPostCount(postCount || 0)
-      setViewedProfile({ ...result.profiles[0], is_verified: Boolean(verifiedUsers[userId]) })
-      setViewedProfilePosts(enrichedPosts)
-      setViewedFollowStats({ ...followStats, userId })
+      const verified = activity[0]?.author?.is_verified
+      setViewedProfile({ ...result.profiles[0], is_verified: Boolean(verified) })
+      setViewedProfilePosts(result.posts.map((post, index) => ({ ...activity[index], ...post, author: activity[index].author })))
+      if (verified == null) {
+        fetchVerifiedUsers([userId]).then(status => {
+          if (requestId === profilePostsRequestRef.current) setViewedProfile(current => ({ ...current, is_verified: Boolean(status[userId]) }))
+        }).catch(() => {})
+      }
     } catch (error) {
       if (requestId === profilePostsRequestRef.current) setViewedProfileError(`This profile is unavailable. ${error.message}`)
     } finally {
@@ -743,6 +782,11 @@ export default function App() {
   async function togglePostLike(post) {
     if (!supabase || !user || busyLikePosts.includes(post.id)) return
     setBusyLikePosts(current => [...current, post.id])
+      updatePost(post.id, item => ({
+        ...item,
+        liked_by_me: !post.liked_by_me,
+        like_count: Math.max(0, (item.like_count ?? 0) + (post.liked_by_me ? -1 : 1)),
+      }))
     try {
       if (post.liked_by_me) {
         const { error } = await supabase.from('post_likes').delete().eq('post_id', post.id).eq('user_id', user.id)
@@ -751,12 +795,9 @@ export default function App() {
         const { error } = await supabase.from('post_likes').insert({ post_id: post.id, user_id: user.id })
         if (error) throw error
       }
-      updatePost(post.id, item => ({
-        ...item,
-        liked_by_me: !post.liked_by_me,
-        like_count: Math.max(0, (item.like_count ?? 0) + (post.liked_by_me ? -1 : 1)),
-      }))
     } catch (error) {
+      updatePost(post.id, item => ({ ...item, liked_by_me: Boolean(post.liked_by_me),
+        like_count: Math.max(0, (item.like_count ?? 0) + (post.liked_by_me ? 1 : -1)) }))
       setProfileNotice({ kind: 'error', text: `Could not update like. Run the updated supabase/posts-schema.sql. (${error.message})` })
     } finally {
       setBusyLikePosts(current => current.filter(id => id !== post.id))
@@ -768,18 +809,25 @@ export default function App() {
     const content = (commentDrafts[post.id] || '').trim()
     if (!content || !supabase || !user || busyCommentPost) return
     setBusyCommentPost(post.id)
+    setCommentDrafts(current => ({ ...current, [post.id]: '' }))
+    const id = crypto.randomUUID()
+    const comment = { id, post_id: post.id, user_id: user.id, content }
+    updatePost(post.id, item => ({
+      ...item,
+      comments: [{ ...comment, created_at: new Date().toISOString(), pending: true, author_name: profile.full_name || 'You' }, ...(item.comments || [])],
+      comments_total: (item.comments_total ?? item.comments?.length ?? 0) + 1,
+    }))
     try {
-      const { data, error } = await supabase.from('post_comments').insert({ post_id: post.id, user_id: user.id, content }).select('id, post_id, user_id, content, created_at').single()
+      const { data, error } = await supabase.from('post_comments').insert(comment).select('created_at').single()
       if (error) throw error
-      const comment = { ...data, author_name: profile.full_name || user.user_metadata?.full_name || 'You' }
-      updatePost(post.id, item => ({
-        ...item,
-        comments: item.comments_loaded ? [comment, ...item.comments] : item.comments,
-        comments_total: item.comments_total == null ? null : item.comments_total + 1,
-      }))
-      setCommentDrafts(current => ({ ...current, [post.id]: '' }))
+      updatePost(post.id, item => ({ ...item, comments: (item.comments || []).map(row => row.id === id ? { ...row, created_at: data.created_at, pending: false } : row) }))
     } catch (error) {
-      setProfileNotice({ kind: 'error', text: `Could not add comment. Run the updated supabase/posts-schema.sql. (${error.message})` })
+      updatePost(post.id, item => ({
+        ...item, comments: (item.comments || []).filter(row => row.id !== id),
+        comments_total: Math.max(0, (item.comments_total || 0) - 1),
+      }))
+      setCommentDrafts(current => ({ ...current, [post.id]: current[post.id] || content }))
+      setProfileNotice({ kind: 'error', text: `Could not add comment. (${error.message})` })
     } finally {
       setBusyCommentPost('')
     }

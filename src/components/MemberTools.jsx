@@ -1,3 +1,4 @@
+import { unsubscribeBrowserPush } from './BrowserPush.jsx'
 import { Search } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -98,7 +99,7 @@ export function AccountSettings({ api, supabase, user, notify }) {
     </form>
     <h3>Sessions</h3><p>Signed in as {user.email} on this browser.</p>
     <button type="button" disabled={busy} onClick={() => run(async () => { const { error } = await supabase.auth.signOut({ scope: 'others' }); if (error) throw error }, 'Other sessions signed out.')}>Sign out other sessions</button>
-    <button type="button" disabled={busy} onClick={() => run(async () => { const { error } = await supabase.auth.signOut({ scope: 'global' }); if (error) throw error })}>Sign out all sessions</button>
+    <button type="button" disabled={busy} onClick={() => run(async () => { await unsubscribeBrowserPush(api).catch(() => {}); const { error } = await supabase.auth.signOut({ scope: 'global' }); if (error) throw error })}>Sign out all sessions</button>
     <h3>Blocked members</h3>{!blocks.length && <p>No blocked members.</p>}
     {blocks.map(member => <div key={member.user_id}>{member.full_name || 'Member'} <button type="button" disabled={busy} onClick={() => run(async () => {
       await api(`/api/members/${member.user_id}/block`, { method: 'DELETE' })

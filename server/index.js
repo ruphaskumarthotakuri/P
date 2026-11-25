@@ -7,6 +7,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import { Redis } from '@upstash/redis'
 import { registerMemberFeatures } from './member-features.js'
+import { registerBrowserPush } from './browser-push.js'
 import { normalizeWhatsAppNumber, sendWhatsAppText, startWhatsApp, unlinkWhatsApp, whatsappAdminStatus, whatsappStatus } from './whatsapp.js'
 
 const app = express()
@@ -865,6 +866,8 @@ registerMemberFeatures(app, {
     return true
   },
 })
+
+registerBrowserPush(app, adminSupabase, getMemberForRequest)
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` })

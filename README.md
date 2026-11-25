@@ -31,3 +31,11 @@ Admins can send a manually composed WhatsApp message from each member row or sen
 
 Only the Supabase anon/public key is needed. Row level security and policies should be enabled for any future user-owned database tables.
 # P
+## Browser notifications
+
+Apply `supabase/browser-push.sql` after `supabase/member-features.sql` in the Supabase SQL Editor. New comment notifications will show the comment text. Older notifications have no stored link to the original comment.
+
+1. Generate one VAPID key pair with `npx web-push generate-vapid-keys`. Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` (a contact URI such as `mailto:admin@example.com`) in the server environment.
+2. Generate a separate random secret with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` and set it as `PUSH_WEBHOOK_SECRET` in the same server environment.
+3. In Supabase Database Webhooks, add an INSERT webhook for `public.notifications`. Use POST to the deployed HTTPS app URL followed by `/api/push/deliver`. Add a header named `x-push-secret` with the same secret from step 2.
+4. Deploy, then sign in and select **Enable browser alerts** in Notifications. A second account can follow, like, or comment to verify delivery, including with the app tab closed.
